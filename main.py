@@ -32,11 +32,12 @@ def createBot() -> commands.Bot:
 async def runBot():
     botClient = createBot()
 
-    try:
-        await botClient.load_extension("cogs.tracker")
-        appLogger.info("Loaded extension: cogs.tracker")
-    except Exception:
-        appLogger.exception("Failed to load extension: cogs.tracker")
+    for extension in ["cogs.tracker", "cogs.lolReport"]:
+        try:
+            await botClient.load_extension(extension)
+            appLogger.info("Loaded extension: %s", extension)
+        except Exception:
+            appLogger.exception("Failed to load extension: %s", extension)
 
     if not appSettings.isConfigured:
         appLogger.error("DISCORD_TOKEN is not set; update your .env file.")

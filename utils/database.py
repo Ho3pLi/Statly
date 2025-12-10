@@ -113,6 +113,21 @@ CREATE INDEX IF NOT EXISTS idx_guildMemberAccount_externalAccountId ON guildMemb
 CREATE INDEX IF NOT EXISTS idx_lolRankSnapshot_externalAccountId ON lolRankSnapshot (externalAccountId);
 CREATE INDEX IF NOT EXISTS idx_valorantRankSnapshot_externalAccountId ON valorantRankSnapshot (externalAccountId);
 CREATE INDEX IF NOT EXISTS idx_csgoRankSnapshot_externalAccountId ON csgoRankSnapshot (externalAccountId);
+
+CREATE TABLE IF NOT EXISTS reportPreference (
+    id INTEGER PRIMARY KEY,
+    guildId INTEGER NOT NULL REFERENCES guild(id) ON DELETE CASCADE,
+    userId INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    externalAccountId INTEGER NOT NULL REFERENCES externalAccount(id) ON DELETE CASCADE,
+    queueType TEXT NOT NULL DEFAULT 'RANKED_SOLO_5x5',
+    schedule TEXT NOT NULL, -- HH:MM in UTC
+    enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (guildId, userId, externalAccountId, queueType)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reportPreference_schedule ON reportPreference (schedule);
+CREATE INDEX IF NOT EXISTS idx_reportPreference_enabled ON reportPreference (enabled);
 """
 
 
@@ -260,4 +275,64 @@ class DatabaseClient:
 
         if shouldBePrimary:
             self.setPrimaryForGame(guildId, userId, gameId, externalAccountId)
+        return True
+
+    def getReportPreference(self, guildId: int, userId: int, externalAccountId: int, queueType: str):
+        return self.connection.execute(
+            """
+            SELECT id, schedule, enabled
+            FROM reportPreference
+            WHERE guildId = ? AND userId = ? AND externalAccountId = ? AND queueType = ?
+            """,
+            (guildId, userId, externalAccountId, queueType),
+        ).fetchone()
+
+    def countEnabledReportsForSchedule(self, schedule: str) -> int:
+        row = self.connection.execute(
+            "SELECT COUNT(*) as cnt FROM reportPreference WHERE enabled = 1 AND schedule = ?",
+            (schedule,),
+        ).fetchone()
+        return int(row["cnt"]) if row else 0
+
+    def upsertReportPreference(
+        self,
+        guildId: int,
+        userId: int,
+        externalAccountId: int,
+        queueType: str,
+        schedule: str,
+        maxPerMinute: int = 25,
+    ) -> bool:
+        existing = self.getReportPreference(guildId, userId, externalAccountId, queueType)
+        targetSchedule = schedule
+        if existing and existing["schedule"] == targetSchedule and existing["enabled"]:
+            return True
+
+        currentCount = self.countEnabledReportsForSchedule(targetSchedule)
+        if currentCount >= maxPerMinute:
+            return False
+
+        self.connection.execute(
+            """
+            INSERT INTO reportPreference (guildId, userId, externalAccountId, queueType, schedule, enabled)
+            VALUES (?, ?, ?, ?, ?, 1)
+            ON CONFLICT(guildId, userId, externalAccountId, queueType) DO UPDATE SET
+                schedule = excluded.schedule,
+                enabled = 1
+            """,
+            (guildId, userId, externalAccountId, queueType, targetSchedule),
+        )
+        self.connection.commit()
+        return True
+
+    def disableReportPreference(self, guildId: int, userId: int, externalAccountId: int, queueType: str) -> bool:
+        self.connection.execute(
+            """
+            UPDATE reportPreference
+            SET enabled = 0
+            WHERE guildId = ? AND userId = ? AND externalAccountId = ? AND queueType = ?
+            """,
+            (guildId, userId, externalAccountId, queueType),
+        )
+        self.connection.commit()
         return True
