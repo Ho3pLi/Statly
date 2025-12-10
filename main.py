@@ -2,52 +2,51 @@ import asyncio
 import discord
 from discord.ext import commands
 
-from config.settings import settings
-from utils.logger import get_logger
+from config.settings import appSettings
+from utils.logger import getLogger
 
 
-logger = get_logger(__name__)
+appLogger = getLogger(__name__)
 
 
-def create_bot() -> commands.Bot:
-    intents = discord.Intents.default()
-    bot = commands.Bot(command_prefix="!", intents=intents)
+def createBot() -> commands.Bot:
+    botIntents = discord.Intents.default()
+    botClient = commands.Bot(command_prefix="!", intents=botIntents)
 
-    @bot.event
+    @botClient.event
     async def on_ready():
-        logger.info("Bot connected as %s (ID: %s)", bot.user, bot.user and bot.user.id)
+        appLogger.info("Bot connected as %s (ID: %s)", botClient.user, botClient.user and botClient.user.id)
         try:
-            # Ensure application commands are registered for the guilds the bot is in.
-            await bot.tree.sync()
-            logger.info("Slash commands synced")
+            await botClient.tree.sync()
+            appLogger.info("Slash commands synced")
         except Exception:
-            logger.exception("Failed to sync application commands")
+            appLogger.exception("Failed to sync application commands")
 
-    @bot.tree.command(name="ping", description="Placeholder command that replies with pong.")
-    async def ping_command(interaction: discord.Interaction):
+    @botClient.tree.command(name="ping", description="Placeholder command that replies with pong.")
+    async def pingCommand(interaction: discord.Interaction):
         await interaction.response.send_message("Pong!", ephemeral=True)
 
-    return bot
+    return botClient
 
 
-async def main():
-    bot = create_bot()
+async def runBot():
+    botClient = createBot()
 
     try:
-        await bot.load_extension("cogs.tracker")
-        logger.info("Loaded extension: cogs.tracker")
+        await botClient.load_extension("cogs.tracker")
+        appLogger.info("Loaded extension: cogs.tracker")
     except Exception:
-        logger.exception("Failed to load extension: cogs.tracker")
+        appLogger.exception("Failed to load extension: cogs.tracker")
 
-    if not settings.is_configured:
-        logger.error("DISCORD_TOKEN is not set; update your .env file.")
+    if not appSettings.isConfigured:
+        appLogger.error("DISCORD_TOKEN is not set; update your .env file.")
         return
 
-    await bot.start(settings.DISCORD_TOKEN)
+    await botClient.start(appSettings.discordToken)
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        asyncio.run(runBot())
     except KeyboardInterrupt:
-        logger.info("Bot shutdown requested by user")
+        appLogger.info("Bot shutdown requested by user")

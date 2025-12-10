@@ -9,11 +9,14 @@ load_dotenv()
 
 @dataclass
 class Settings:
-    DISCORD_TOKEN: str = os.getenv("DISCORD_TOKEN", "")
+    discordToken: str = os.getenv("DISCORD_TOKEN", "")
+    riotApiKey: str = os.getenv("RIOT_API_KEY", "")
+    riotRegion: str = os.getenv("RIOT_REGION", "euw1")
+    databasePath: str = os.getenv("DATABASE_PATH", "data/statly.db")
 
     @property
-    def is_configured(self) -> bool:
-        return bool(self.DISCORD_TOKEN)
+    def isConfigured(self) -> bool:
+        return bool(self.discordToken)
 
 
-settings = Settings()
+appSettings = Settings()

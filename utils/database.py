@@ -1,0 +1,263 @@
+import sqlite3
+from pathlib import Path
+from typing import Optional
+
+from utils.logger import getLogger
+
+
+dbLogger = getLogger(__name__)
+
+
+SCHEMA_SQL = """
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS game (
+    id INTEGER PRIMARY KEY,
+    code TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS user (
+    id INTEGER PRIMARY KEY,
+    discordUserId TEXT NOT NULL UNIQUE,
+    username TEXT,
+    discriminator TEXT,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS externalAccount (
+    id INTEGER PRIMARY KEY,
+    gameId INTEGER NOT NULL REFERENCES game(id) ON DELETE CASCADE,
+    externalId TEXT NOT NULL,
+    displayName TEXT,
+    tagLine TEXT,
+    region TEXT,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (gameId, externalId)
+);
+
+CREATE TABLE IF NOT EXISTS guild (
+    id INTEGER PRIMARY KEY,
+    discordGuildId TEXT NOT NULL UNIQUE,
+    name TEXT,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS guildMemberAccount (
+    id INTEGER PRIMARY KEY,
+    guildId INTEGER NOT NULL REFERENCES guild(id) ON DELETE CASCADE,
+    userId INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+    externalAccountId INTEGER NOT NULL REFERENCES externalAccount(id) ON DELETE CASCADE,
+    isPrimary INTEGER NOT NULL DEFAULT 0 CHECK (isPrimary IN (0, 1)),
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (guildId, userId, externalAccountId)
+);
+
+CREATE TABLE IF NOT EXISTS lolProfile (
+    id INTEGER PRIMARY KEY,
+    externalAccountId INTEGER NOT NULL UNIQUE REFERENCES externalAccount(id) ON DELETE CASCADE,
+    summonerLevel INTEGER,
+    iconId INTEGER,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS lolRankSnapshot (
+    id INTEGER PRIMARY KEY,
+    externalAccountId INTEGER NOT NULL REFERENCES externalAccount(id) ON DELETE CASCADE,
+    queueType TEXT,
+    tier TEXT,
+    division TEXT,
+    lp INTEGER,
+    wins INTEGER,
+    losses INTEGER,
+    capturedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS valorantProfile (
+    id INTEGER PRIMARY KEY,
+    externalAccountId INTEGER NOT NULL UNIQUE REFERENCES externalAccount(id) ON DELETE CASCADE,
+    accountLevel INTEGER,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS valorantRankSnapshot (
+    id INTEGER PRIMARY KEY,
+    externalAccountId INTEGER NOT NULL REFERENCES externalAccount(id) ON DELETE CASCADE,
+    tier TEXT,
+    rankRating INTEGER,
+    wins INTEGER,
+    losses INTEGER,
+    capturedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS csgoProfile (
+    id INTEGER PRIMARY KEY,
+    externalAccountId INTEGER NOT NULL UNIQUE REFERENCES externalAccount(id) ON DELETE CASCADE,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS csgoRankSnapshot (
+    id INTEGER PRIMARY KEY,
+    externalAccountId INTEGER NOT NULL REFERENCES externalAccount(id) ON DELETE CASCADE,
+    rank TEXT,
+    wins INTEGER,
+    losses INTEGER,
+    capturedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_externalAccount_game_externalId ON externalAccount (gameId, externalId);
+CREATE INDEX IF NOT EXISTS idx_guildMemberAccount_guildId ON guildMemberAccount (guildId);
+CREATE INDEX IF NOT EXISTS idx_guildMemberAccount_userId ON guildMemberAccount (userId);
+CREATE INDEX IF NOT EXISTS idx_guildMemberAccount_externalAccountId ON guildMemberAccount (externalAccountId);
+CREATE INDEX IF NOT EXISTS idx_lolRankSnapshot_externalAccountId ON lolRankSnapshot (externalAccountId);
+CREATE INDEX IF NOT EXISTS idx_valorantRankSnapshot_externalAccountId ON valorantRankSnapshot (externalAccountId);
+CREATE INDEX IF NOT EXISTS idx_csgoRankSnapshot_externalAccountId ON csgoRankSnapshot (externalAccountId);
+"""
+
+
+class DatabaseClient:
+    def __init__(self, dbPath: str):
+        self.dbPath = Path(dbPath)
+        self.dbPath.parent.mkdir(parents=True, exist_ok=True)
+        self.connection = sqlite3.connect(self.dbPath)
+        self.connection.row_factory = sqlite3.Row
+        self.ensureSchema()
+
+    def ensureSchema(self) -> None:
+        self.connection.executescript(SCHEMA_SQL)
+        self.connection.commit()
+
+    def getOrCreateGame(self, code: str, name: str) -> int:
+        cursor = self.connection.execute(
+            "INSERT OR IGNORE INTO game (code, name) VALUES (?, ?)", (code, name)
+        )
+        if cursor.lastrowid:
+            self.connection.commit()
+            return cursor.lastrowid
+        existing = self.connection.execute("SELECT id FROM game WHERE code = ?", (code,)).fetchone()
+        return int(existing["id"])
+
+    def getOrCreateGuild(self, discordGuildId: str, name: Optional[str]) -> int:
+        cursor = self.connection.execute(
+            "INSERT OR IGNORE INTO guild (discordGuildId, name) VALUES (?, ?)",
+            (discordGuildId, name),
+        )
+        if cursor.lastrowid:
+            self.connection.commit()
+            return cursor.lastrowid
+        self.connection.execute(
+            "UPDATE guild SET name = COALESCE(?, name) WHERE discordGuildId = ?",
+            (name, discordGuildId),
+        )
+        self.connection.commit()
+        existing = self.connection.execute(
+            "SELECT id FROM guild WHERE discordGuildId = ?", (discordGuildId,)
+        ).fetchone()
+        return int(existing["id"])
+
+    def getOrCreateUser(self, discordUserId: str, username: Optional[str], discriminator: Optional[str]) -> int:
+        cursor = self.connection.execute(
+            "INSERT OR IGNORE INTO user (discordUserId, username, discriminator) VALUES (?, ?, ?)",
+            (discordUserId, username, discriminator),
+        )
+        if cursor.lastrowid:
+            self.connection.commit()
+            return cursor.lastrowid
+        self.connection.execute(
+            "UPDATE user SET username = COALESCE(?, username), discriminator = COALESCE(?, discriminator) WHERE discordUserId = ?",
+            (username, discriminator, discordUserId),
+        )
+        self.connection.commit()
+        existing = self.connection.execute(
+            "SELECT id FROM user WHERE discordUserId = ?", (discordUserId,)
+        ).fetchone()
+        return int(existing["id"])
+
+    def getOrCreateExternalAccount(
+        self,
+        gameId: int,
+        externalId: str,
+        displayName: Optional[str],
+        tagLine: Optional[str],
+        region: Optional[str],
+    ) -> int:
+        cursor = self.connection.execute(
+            "INSERT OR IGNORE INTO externalAccount (gameId, externalId, displayName, tagLine, region) VALUES (?, ?, ?, ?, ?)",
+            (gameId, externalId, displayName, tagLine, region),
+        )
+        if cursor.lastrowid:
+            self.connection.commit()
+            return cursor.lastrowid
+        self.connection.execute(
+            "UPDATE externalAccount SET displayName = COALESCE(?, displayName), tagLine = COALESCE(?, tagLine), region = COALESCE(?, region) WHERE gameId = ? AND externalId = ?",
+            (displayName, tagLine, region, gameId, externalId),
+        )
+        self.connection.commit()
+        existing = self.connection.execute(
+            "SELECT id FROM externalAccount WHERE gameId = ? AND externalId = ?", (gameId, externalId)
+        ).fetchone()
+        return int(existing["id"])
+
+    def getGameIdForExternalAccount(self, externalAccountId: int) -> Optional[int]:
+        row = self.connection.execute(
+            "SELECT gameId FROM externalAccount WHERE id = ?", (externalAccountId,)
+        ).fetchone()
+        return int(row["gameId"]) if row else None
+
+    def hasPrimaryForGame(self, guildId: int, userId: int, gameId: int) -> bool:
+        row = self.connection.execute(
+            """
+            SELECT 1
+            FROM guildMemberAccount gma
+            JOIN externalAccount ea ON ea.id = gma.externalAccountId
+            WHERE gma.guildId = ? AND gma.userId = ? AND ea.gameId = ? AND gma.isPrimary = 1
+            LIMIT 1
+            """,
+            (guildId, userId, gameId),
+        ).fetchone()
+        return bool(row)
+
+    def setPrimaryForGame(self, guildId: int, userId: int, gameId: int, externalAccountId: int) -> None:
+        self.connection.execute(
+            """
+            UPDATE guildMemberAccount
+            SET isPrimary = 0
+            WHERE guildId = ? AND userId = ? AND externalAccountId IN (
+                SELECT id FROM externalAccount WHERE gameId = ?
+            )
+            """,
+            (guildId, userId, gameId),
+        )
+        self.connection.execute(
+            """
+            UPDATE guildMemberAccount
+            SET isPrimary = 1
+            WHERE guildId = ? AND userId = ? AND externalAccountId = ?
+            """,
+            (guildId, userId, externalAccountId),
+        )
+        self.connection.commit()
+
+    def linkGuildMemberAccount(self, guildId: int, userId: int, externalAccountId: int, forcePrimary: bool = False) -> bool:
+        gameId = self.getGameIdForExternalAccount(externalAccountId)
+        if gameId is None:
+            dbLogger.error("Cannot link guild member: externalAccountId %s missing gameId", externalAccountId)
+            return False
+
+        shouldBePrimary = forcePrimary or not self.hasPrimaryForGame(guildId, userId, gameId)
+
+        self.connection.execute(
+            """
+            INSERT INTO guildMemberAccount (guildId, userId, externalAccountId, isPrimary)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guildId, userId, externalAccountId) DO UPDATE SET
+                isPrimary = excluded.isPrimary
+            """,
+            (guildId, userId, externalAccountId, 1 if shouldBePrimary else 0),
+        )
+        self.connection.commit()
+
+        if shouldBePrimary:
+            self.setPrimaryForGame(guildId, userId, gameId, externalAccountId)
+        return True
