@@ -287,10 +287,14 @@ class DatabaseClient:
             (guildId, userId, externalAccountId, queueType),
         ).fetchone()
 
-    def countEnabledReportsForSchedule(self, schedule: str) -> int:
+    def countEnabledReportsForSchedule(self, guildId: int, schedule: str) -> int:
         row = self.connection.execute(
-            "SELECT COUNT(*) as cnt FROM reportPreference WHERE enabled = 1 AND schedule = ?",
-            (schedule,),
+            """
+            SELECT COUNT(*) as cnt
+            FROM reportPreference
+            WHERE enabled = 1 AND schedule = ? AND guildId = ?
+            """,
+            (schedule, guildId),
         ).fetchone()
         return int(row["cnt"]) if row else 0
 
@@ -308,7 +312,7 @@ class DatabaseClient:
         if existing and existing["schedule"] == targetSchedule and existing["enabled"]:
             return True
 
-        currentCount = self.countEnabledReportsForSchedule(targetSchedule)
+        currentCount = self.countEnabledReportsForSchedule(guildId, targetSchedule)
         if currentCount >= maxPerMinute:
             return False
 

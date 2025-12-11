@@ -149,7 +149,11 @@ class LolReport(commands.Cog):
                 continue
             user = self.botClient.get_user(int(userId))
             if not user:
-                continue
+                try:
+                    user = await self.botClient.fetch_user(int(userId))
+                except Exception:
+                    lolReportLogger.exception("Failed to fetch user %s for daily report", userId)
+                    continue
             reportData = generateDailyReport(
                 self.dbClient, externalAccountId, queueType, datetime.utcnow().strftime("%Y-%m-%d")
             )
@@ -198,16 +202,19 @@ class LolReport(commands.Cog):
             getattr(interaction.user, "discriminator", None),
         )
 
+        maxPerMinute = appSettings.reportSlotsPerMinute
         created = self.dbClient.upsertReportPreference(
             guildId=guildId,
             userId=userId,
             externalAccountId=externalAccountId,
             queueType=queueType,
             schedule=schedule,
+            maxPerMinute=maxPerMinute,
         )
         if not created:
             await interaction.response.send_message(
-                f"Schedule {schedule} is full (25 users). Please choose a different minute.", ephemeral=True
+                f"Schedule {schedule} is full ({maxPerMinute} users). Please choose a different minute.",
+                ephemeral=True,
             )
             return
 
