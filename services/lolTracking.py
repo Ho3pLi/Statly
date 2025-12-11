@@ -26,7 +26,7 @@ def rowToDict(row) -> Dict:
     return {key: row[key] for key in row.keys()}
 
 
-def getOrCreateDailyBaseline(
+async def getOrCreateDailyBaseline(
     dbClient: DatabaseClient, externalAccountId: int, queueType: str, todayDateStr: str
 ) -> Optional[Dict]:
     baselineRow = dbClient.connection.execute(
@@ -42,7 +42,7 @@ def getOrCreateDailyBaseline(
     if baselineRow:
         return rowToDict(baselineRow)
 
-    current = fetchCurrentLolRank(externalAccountId, queueType)
+    current = await fetchCurrentLolRank(externalAccountId, queueType)
     if not current:
         return None
 
@@ -78,8 +78,8 @@ def getOrCreateDailyBaseline(
     }
 
 
-def getCurrentState(dbClient: DatabaseClient, externalAccountId: int, queueType: str) -> Optional[Dict]:
-    current = fetchCurrentLolRank(externalAccountId, queueType)
+async def getCurrentState(dbClient: DatabaseClient, externalAccountId: int, queueType: str) -> Optional[Dict]:
+    current = await fetchCurrentLolRank(externalAccountId, queueType)
     if not current:
         return None
     return {
@@ -137,11 +137,11 @@ def computeRankDiff(baseline: Dict, current: Dict) -> Dict:
     }
 
 
-def generateDailyReport(
+async def generateDailyReport(
     dbClient: DatabaseClient, externalAccountId: int, queueType: str, todayDateStr: str
 ) -> Dict:
-    baseline = getOrCreateDailyBaseline(dbClient, externalAccountId, queueType, todayDateStr)
-    current = getCurrentState(dbClient, externalAccountId, queueType)
+    baseline = await getOrCreateDailyBaseline(dbClient, externalAccountId, queueType, todayDateStr)
+    current = await getCurrentState(dbClient, externalAccountId, queueType)
     diff = computeRankDiff(baseline or {}, current or {})
 
     return {"baseline": baseline, "current": current, "diff": diff}

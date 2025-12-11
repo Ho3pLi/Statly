@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -32,7 +33,7 @@ class Tracker(commands.Cog):
 
         await interaction.response.defer(ephemeral=True)
 
-        account = self.riotApi.getAccountByRiotId(gameName, tagLine)
+        account = await asyncio.to_thread(self.riotApi.getAccountByRiotId, gameName, tagLine)
         if not account:
             await interaction.followup.send("Could not find that account. Check the Riot ID (name#tag).", ephemeral=True)
             return

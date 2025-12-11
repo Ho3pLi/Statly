@@ -1,3 +1,4 @@
+import asyncio
 from typing import Dict, Optional
 
 from config.settings import appSettings
@@ -9,7 +10,7 @@ from utils.riotApi import RiotAPI
 riotApiLogger = getLogger(__name__)
 
 
-def fetchCurrentLolRank(externalAccountId: int, queueType: str) -> Optional[Dict]:
+async def fetchCurrentLolRank(externalAccountId: int, queueType: str) -> Optional[Dict]:
     """
     Fetch current ranked data for a League of Legends account by externalAccountId and queueType.
     Resolves the puuid from the database, calls Riot API, and returns rank data dict or None.
@@ -26,7 +27,7 @@ def fetchCurrentLolRank(externalAccountId: int, queueType: str) -> Optional[Dict
     region = accountRow["region"] or appSettings.riotRegion
 
     riotClient = RiotAPI(region)
-    entries = riotClient.getLolRankedEntriesByPuuid(puuid)
+    entries = await asyncio.to_thread(riotClient.getLolRankedEntriesByPuuid, puuid)
     for entry in entries:
         if entry.get("queueType") == queueType:
             return {

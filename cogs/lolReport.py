@@ -31,7 +31,7 @@ class LolReport(commands.Cog):
             return
 
         todayStr = datetime.utcnow().strftime("%Y-%m-%d")
-        reportData = generateDailyReport(self.dbClient, externalAccountId, queueType, todayStr)
+        reportData = await generateDailyReport(self.dbClient, externalAccountId, queueType, todayStr)
 
         accountInfo = self.getExternalAccountInfo(externalAccountId)
         embed = self.buildReportEmbed(interaction.user, queueType, reportData, accountInfo)
@@ -154,7 +154,7 @@ class LolReport(commands.Cog):
                 except Exception:
                     lolReportLogger.exception("Failed to fetch user %s for daily report", userId)
                     continue
-            reportData = generateDailyReport(
+            reportData = await generateDailyReport(
                 self.dbClient, externalAccountId, queueType, datetime.utcnow().strftime("%Y-%m-%d")
             )
             accountInfo = self.getExternalAccountInfo(externalAccountId)
