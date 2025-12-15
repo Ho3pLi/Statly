@@ -120,6 +120,41 @@ class Tracker(commands.Cog):
             f"Linked Apex account {playerName} on {platform}.", ephemeral=True
         )
 
+    @app_commands.command(name="registerrocketleague", description="Link your Rocket League Epic username.")
+    @app_commands.rename(epicId="epicid")
+    async def registerRocketLeagueCommand(self, interaction: discord.Interaction, epicId: str):
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        gameId = self.dbClient.getOrCreateGame("RL", "Rocket League")
+        guildId = self.dbClient.getOrCreateGuild(str(interaction.guild_id), getattr(interaction.guild, "name", None))
+        userId = self.dbClient.getOrCreateUser(
+            str(interaction.user.id),
+            getattr(interaction.user, "name", None),
+            getattr(interaction.user, "discriminator", None),
+        )
+        externalAccountId = self.dbClient.getOrCreateExternalAccount(
+            gameId=gameId,
+            externalId=epicId,
+            displayName=epicId,
+            tagLine=None,
+            region=None,
+        )
+
+        linkOk = self.dbClient.linkGuildMemberAccount(guildId, userId, externalAccountId, forcePrimary=False)
+        if not linkOk:
+            await interaction.followup.send(
+                "Error while saving the account; please try again later or contact an admin.", ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            f"Linked Rocket League account for Epic ID {epicId}.", ephemeral=True
+        )
+
 
 async def setup(botClient: commands.Bot):
     await botClient.add_cog(Tracker(botClient))
