@@ -141,7 +141,18 @@ class DatabaseClient:
 
     def ensureSchema(self) -> None:
         self.connection.executescript(SCHEMA_SQL)
+        self.ensureColumn("valorantRankSnapshot", "queueType", "TEXT")
+        self.ensureColumn("valorantRankSnapshot", "tier", "TEXT")
+        self.ensureColumn("valorantRankSnapshot", "division", "TEXT")
+        self.ensureColumn("valorantRankSnapshot", "lp", "INTEGER")
+        self.ensureColumn("valorantRankSnapshot", "wins", "INTEGER")
+        self.ensureColumn("valorantRankSnapshot", "losses", "INTEGER")
         self.connection.commit()
+
+    def ensureColumn(self, tableName: str, columnName: str, columnType: str) -> None:
+        columns = self.connection.execute(f"PRAGMA table_info({tableName})").fetchall()
+        if not any(col["name"] == columnName for col in columns):
+            self.connection.execute(f"ALTER TABLE {tableName} ADD COLUMN {columnName} {columnType}")
 
     def getOrCreateGame(self, code: str, name: str) -> int:
         cursor = self.connection.execute(

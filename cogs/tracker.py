@@ -63,8 +63,19 @@ class Tracker(commands.Cog):
             await interaction.followup.send("Error while saving the account; please try again later.", ephemeral=True)
             return
 
+        valorantGameId = self.dbClient.getOrCreateGame("VAL", "Valorant")
+        valorantExternalAccountId = self.dbClient.getOrCreateExternalAccount(
+            gameId=valorantGameId,
+            externalId=puuid,
+            displayName=gameName,
+            tagLine=tagLine,
+            region=appSettings.riotRegion,
+        )
+        self.dbClient.linkGuildMemberAccount(guildId, userId, valorantExternalAccountId, forcePrimary=False)
+
         await interaction.followup.send(
-            f"Linked Riot ID {gameName}#{tagLine}. PUUID stored for this server.", ephemeral=True
+            f"Linked Riot ID {gameName}#{tagLine}. PUUID stored for this server (League + Valorant).",
+            ephemeral=True,
         )
 
 

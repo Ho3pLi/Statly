@@ -39,3 +39,28 @@ async def fetchCurrentLolRank(externalAccountId: int, queueType: str) -> Optiona
                 "losses": entry.get("losses"),
             }
     return None
+
+
+async def fetchCurrentValorantRank(externalAccountId: int, queueType: str) -> Optional[Dict]:
+    """
+    Mocked Valorant rank fetch. Returns a static payload shaped like a real response.
+    Replace this with real API integration when available.
+    """
+    dbClient = DatabaseClient(appSettings.databasePath)
+    accountRow = dbClient.connection.execute(
+        "SELECT externalId, region FROM externalAccount WHERE id = ?", (externalAccountId,)
+    ).fetchone()
+    if not accountRow:
+        riotApiLogger.error("No external account found for id=%s", externalAccountId)
+        return None
+
+    # Mocked payload; adjust to real fields when wiring the actual Valorant API.
+    return {
+        "queueType": queueType,
+        "tier": "DIAMOND",
+        "division": "2",
+        "lp": 55,
+        "wins": 120,
+        "losses": 110,
+        "region": accountRow["region"],
+    }
