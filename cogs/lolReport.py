@@ -130,7 +130,9 @@ class LolReport(commands.Cog):
                 u.discordUserId
             FROM reportPreference rp
             JOIN user u ON u.id = rp.userId
-            WHERE rp.enabled = 1
+            JOIN externalAccount ea ON ea.id = rp.externalAccountId
+            JOIN game g ON g.id = ea.gameId
+            WHERE rp.enabled = 1 AND g.code = 'LOL'
             """,
         ).fetchall()
         return [dict(row) for row in rows]
