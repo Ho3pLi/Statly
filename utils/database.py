@@ -273,16 +273,26 @@ class DatabaseClient:
 
         shouldBePrimary = forcePrimary or not self.hasPrimaryForGame(guildId, userId, gameId)
 
-        self.connection.execute(
-            """
-            INSERT INTO guildMemberAccount (guildId, userId, externalAccountId, isPrimary)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(guildId, userId, externalAccountId) DO UPDATE SET
-                isPrimary = excluded.isPrimary
-            """,
-            (guildId, userId, externalAccountId, 1 if shouldBePrimary else 0),
-        )
-        self.connection.commit()
+        try:
+            self.connection.execute(
+                """
+                INSERT INTO guildMemberAccount (guildId, userId, externalAccountId, isPrimary)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(guildId, userId, externalAccountId) DO UPDATE SET
+                    isPrimary = excluded.isPrimary
+                """,
+                (guildId, userId, externalAccountId, 1 if shouldBePrimary else 0),
+            )
+            self.connection.commit()
+        except sqlite3.IntegrityError as error:
+            dbLogger.error(
+                "Failed to link guild member (guildId=%s, userId=%s, externalAccountId=%s): %s",
+                guildId,
+                userId,
+                externalAccountId,
+                error,
+            )
+            return False
 
         if shouldBePrimary:
             self.setPrimaryForGame(guildId, userId, gameId, externalAccountId)

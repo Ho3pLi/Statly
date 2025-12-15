@@ -78,6 +78,48 @@ class Tracker(commands.Cog):
             ephemeral=True,
         )
 
+    @app_commands.command(name="registerapex", description="Link your Apex Legends account (name + platform).")
+    @app_commands.rename(playerName="playername", platform="platform")
+    @app_commands.choices(
+        platform=[
+            app_commands.Choice(name="PC", value="PC"),
+            app_commands.Choice(name="PS4", value="PS4"),
+            app_commands.Choice(name="Xbox", value="X1"),
+        ]
+    )
+    async def registerApexCommand(self, interaction: discord.Interaction, playerName: str, platform: str):
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        gameId = self.dbClient.getOrCreateGame("APEX", "Apex Legends")
+        guildId = self.dbClient.getOrCreateGuild(str(interaction.guild_id), getattr(interaction.guild, "name", None))
+        userId = self.dbClient.getOrCreateUser(
+            str(interaction.user.id),
+            getattr(interaction.user, "name", None),
+            getattr(interaction.user, "discriminator", None),
+        )
+        externalAccountId = self.dbClient.getOrCreateExternalAccount(
+            gameId=gameId,
+            externalId=playerName,
+            displayName=playerName,
+            tagLine=platform,
+            region=None,
+        )
+
+        linkOk = self.dbClient.linkGuildMemberAccount(guildId, userId, externalAccountId, forcePrimary=False)
+        if not linkOk:
+            await interaction.followup.send(
+                "Error while saving the account; please try again later or contact an admin.", ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            f"Linked Apex account {playerName} on {platform}.", ephemeral=True
+        )
+
 
 async def setup(botClient: commands.Bot):
     await botClient.add_cog(Tracker(botClient))

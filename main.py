@@ -32,7 +32,7 @@ def createBot() -> commands.Bot:
 async def runBot():
     botClient = createBot()
 
-    for extension in ["cogs.tracker", "cogs.lolReport", "cogs.valorantReport"]:
+    for extension in ["cogs.tracker", "cogs.lolReport", "cogs.valorantReport", "cogs.apexReport"]:
         try:
             await botClient.load_extension(extension)
             appLogger.info("Loaded extension: %s", extension)
