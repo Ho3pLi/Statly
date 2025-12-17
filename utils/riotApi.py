@@ -15,10 +15,36 @@ class RiotAPI:
 
     def __init__(self, region: str, apiKey: Optional[str] = None):
         self.region: str = region
+        self.accountRegion: str = self.resolveAccountRegion(region)
         self.apiKey: str = apiKey or appSettings.riotApiKey or os.getenv("RIOT_API_KEY", "")
         self.platformBaseUrl: str = f"https://{self.region}.api.riotgames.com"
-        self.accountBaseUrl: str = f"https://{self.region}.api.riotgames.com"
+        self.accountBaseUrl: str = f"https://{self.accountRegion}.api.riotgames.com"
         self.headers: Dict[str, str] = {"X-Riot-Token": self.apiKey}
+
+    @staticmethod
+    def resolveAccountRegion(region: str) -> str:
+        regionLower = region.lower()
+        if regionLower in {"americas", "europe", "asia", "sea"}:
+            return regionLower
+        platformMap = {
+            "br1": "americas",
+            "eun1": "europe",
+            "euw1": "europe",
+            "jp1": "asia",
+            "kr": "asia",
+            "la1": "americas",
+            "la2": "americas",
+            "na1": "americas",
+            "oc1": "americas",
+            "ph2": "sea",
+            "ru": "europe",
+            "sg2": "sea",
+            "th2": "sea",
+            "tr1": "europe",
+            "tw2": "sea",
+            "vn2": "sea",
+        }
+        return platformMap.get(regionLower, regionLower)
 
     def getAccountByRiotId(self, gameName: str, tagLine: str) -> Optional[Dict]:
         """Fetch account details by Riot ID (gameName + tagLine)."""

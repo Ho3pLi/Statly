@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -42,7 +43,7 @@ class RocketLeagueReport(commands.Cog):
         epicId = externalAccount["externalId"]
         await interaction.response.defer(ephemeral=True)
 
-        ranks = fetchRocketLeagueRanks(epicId)
+        ranks = await asyncio.to_thread(fetchRocketLeagueRanks, epicId)
         if not ranks:
             await interaction.followup.send("Could not fetch Rocket League ranks. Please try again later.", ephemeral=True)
             return
@@ -259,7 +260,7 @@ class RocketLeagueReport(commands.Cog):
             if not accountRow:
                 continue
             epicId = accountRow["externalId"]
-            ranks = fetchRocketLeagueRanks(epicId)
+            ranks = await asyncio.to_thread(fetchRocketLeagueRanks, epicId)
             if not ranks:
                 continue
             filteredRanks = self.filterRanks(ranks)

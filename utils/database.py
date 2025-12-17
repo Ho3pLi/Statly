@@ -84,8 +84,10 @@ CREATE TABLE IF NOT EXISTS valorantProfile (
 CREATE TABLE IF NOT EXISTS valorantRankSnapshot (
     id INTEGER PRIMARY KEY,
     externalAccountId INTEGER NOT NULL REFERENCES externalAccount(id) ON DELETE CASCADE,
+    queueType TEXT,
     tier TEXT,
-    rankRating INTEGER,
+    division TEXT,
+    lp INTEGER,
     wins INTEGER,
     losses INTEGER,
     capturedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

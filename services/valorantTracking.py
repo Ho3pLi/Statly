@@ -116,10 +116,10 @@ def computeRankDiff(baseline: Dict, current: Dict) -> Dict:
 
     if currentTierIdx > baselineTierIdx:
         rankUp = True
-        tierChange = f"{baseline.get('tier')} {baseline.get('division')} → {current.get('tier')} {current.get('division')}"
+        tierChange = f"{baseline.get('tier')} {baseline.get('division')} -> {current.get('tier')} {current.get('division')}"
     elif currentTierIdx < baselineTierIdx:
         rankDown = True
-        tierChange = f"{baseline.get('tier')} {baseline.get('division')} → {current.get('tier')} {current.get('division')}"
+        tierChange = f"{baseline.get('tier')} {baseline.get('division')} -> {current.get('tier')} {current.get('division')}"
     else:
         if currentDivVal > baselineDivVal:
             rankUp = True

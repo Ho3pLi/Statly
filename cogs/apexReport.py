@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -40,7 +41,7 @@ class ApexReport(commands.Cog):
         platform = externalAccount["platform"]
 
         await interaction.response.defer(ephemeral=True)
-        rankData = getApexRankSummary(playerName, platform)
+        rankData = await asyncio.to_thread(getApexRankSummary, playerName, platform)
         if not rankData:
             await interaction.followup.send("Could not fetch Apex rank data. Please try again later.", ephemeral=True)
             return
@@ -248,7 +249,7 @@ class ApexReport(commands.Cog):
                 continue
             playerName = accountRow["externalId"]
             platform = accountRow["tagLine"] or "PC"
-            rankData = getApexRankSummary(playerName, platform)
+            rankData = await asyncio.to_thread(getApexRankSummary, playerName, platform)
             if not rankData:
                 continue
             embed = self.buildRankEmbed(user, rankData)
