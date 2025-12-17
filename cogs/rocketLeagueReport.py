@@ -7,6 +7,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from config.settings import appSettings
+from services.rocketLeagueTracking import filterRanks as filterRocketLeagueRanks
+from services.rocketLeagueTracking import generateDailyReport
 from services.rocket_api import fetchRocketLeagueRanks
 from utils.database import DatabaseClient
 from utils.logger import getLogger
@@ -48,7 +50,7 @@ class RocketLeagueReport(commands.Cog):
             await interaction.followup.send("Could not fetch Rocket League ranks. Please try again later.", ephemeral=True)
             return
 
-        filteredRanks = self.filterRanks(ranks)
+        filteredRanks = filterRocketLeagueRanks(ranks)
         if not filteredRanks:
             await interaction.followup.send(
                 "No ranked playlists to display (after filtering non-standard modes).", ephemeral=True
@@ -59,9 +61,14 @@ class RocketLeagueReport(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="reportaddrl", description="Add or update your daily Rocket League report schedule.")
-    @app_commands.rename(schedule="schedule")
-    @app_commands.describe(schedule="Time in HH:MM UTC (minute capped)")
-    async def reportAddRocketLeagueCommand(self, interaction: discord.Interaction, schedule: str):
+    @app_commands.rename(schedule="schedule", channel="channel")
+    @app_commands.describe(
+        schedule="Time in HH:MM UTC (minute capped)",
+        channel="Text channel where the daily report will be posted",
+    )
+    async def reportAddRocketLeagueCommand(
+        self, interaction: discord.Interaction, schedule: str, channel: Optional[discord.TextChannel] = None
+    ):
         if not interaction.guild_id:
             await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
             return
@@ -78,6 +85,13 @@ class RocketLeagueReport(commands.Cog):
             await interaction.response.send_message("Schedule must be in HH:MM format (UTC).", ephemeral=True)
             return
 
+        targetChannel = channel or interaction.channel
+        if not isinstance(targetChannel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Please select a text channel for the daily report.", ephemeral=True
+            )
+            return
+
         guildId = self.dbClient.getOrCreateGuild(str(interaction.guild_id), getattr(interaction.guild, "name", None))
         userId = self.dbClient.getOrCreateUser(
             str(interaction.user.id),
@@ -91,6 +105,7 @@ class RocketLeagueReport(commands.Cog):
             externalAccountId=externalAccount["externalAccountId"],
             queueType="ALL_PLAYLISTS",
             schedule=schedule,
+            channelId=str(targetChannel.id),
             maxPerMinute=maxPerMinute,
         )
         if not created:
@@ -133,7 +148,7 @@ class RocketLeagueReport(commands.Cog):
 
         rows = self.dbClient.connection.execute(
             """
-            SELECT rp.queueType, rp.schedule, rp.enabled, ea.displayName
+            SELECT rp.queueType, rp.schedule, rp.enabled, rp.channelId, ea.displayName
             FROM reportPreference rp
             JOIN user u ON u.id = rp.userId
             JOIN guild g ON g.id = rp.guildId
@@ -151,7 +166,10 @@ class RocketLeagueReport(commands.Cog):
         lines = []
         for row in rows:
             status = "enabled" if row["enabled"] else "disabled"
-            lines.append(f"{row['schedule']} UTC | {row['queueType']} | {row['displayName']} | {status}")
+            channelLabel = f"<#{row['channelId']}>" if row["channelId"] else "N/A"
+            lines.append(
+                f"{row['schedule']} UTC | {row['queueType']} | {row['displayName']} | {channelLabel} | {status}"
+            )
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
 
     def buildRanksEmbed(self, user: discord.abc.User, epicId: str, ranks: List[Dict]) -> discord.Embed:
@@ -176,15 +194,47 @@ class RocketLeagueReport(commands.Cog):
             )
         return embed
 
-    def filterRanks(self, ranks: List[Dict]) -> List[Dict]:
-        excluded = {"hoops", "rumble", "dropshot", "snow day", "snowday"}
-        filtered: List[Dict] = []
-        for rank in ranks:
-            playlist = (rank.get("playlist") or "").lower()
-            if any(ex in playlist for ex in excluded):
-                continue
-            filtered.append(rank)
-        return filtered
+    def buildDailyReportEmbed(
+        self, user: discord.abc.User, epicId: str, reportData: Dict
+    ) -> discord.Embed:
+        baseline = reportData.get("baseline") or []
+        current = reportData.get("current") or []
+        diff = reportData.get("diff") or []
+
+        baselineByPlaylist = {row.get("playlist"): row for row in baseline}
+        diffByPlaylist = {row.get("playlist"): row for row in diff}
+
+        embed = discord.Embed(
+            title="Daily Rocket League Report",
+            description=f"Epic ID: **{epicId}**",
+            color=discord.Color.dark_teal(),
+            timestamp=datetime.utcnow(),
+        )
+        embed.set_author(name=str(user))
+
+        for entry in current:
+            playlist = entry.get("playlist", "Playlist")
+            baselineEntry = baselineByPlaylist.get(playlist) or {}
+            diffEntry = diffByPlaylist.get(playlist) or {}
+            baselineText = (
+                f"{baselineEntry.get('rank', 'N/A')} (Div {baselineEntry.get('division') or 'N/A'}) | "
+                f"MMR {baselineEntry.get('mmr', 'N/A')}"
+            )
+            currentText = (
+                f"{entry.get('rank', 'N/A')} (Div {entry.get('division') or 'N/A'}) | "
+                f"MMR {entry.get('mmr', 'N/A')}"
+            )
+            diffTextParts: List[str] = []
+            mmrDiff = diffEntry.get("mmrDiff")
+            diffTextParts.append(f"MMR diff: {mmrDiff:+}" if mmrDiff is not None else "MMR diff: N/A")
+            if diffEntry.get("rankChange"):
+                diffTextParts.append(f"Rank change: {diffEntry.get('rankChange')}")
+            embed.add_field(
+                name=playlist,
+                value=f"Baseline: {baselineText}\nCurrent: {currentText}\nDiff: " + "\n".join(diffTextParts),
+                inline=False,
+            )
+        return embed
 
     def getPrimaryRocketLeagueAccount(self, discordUserId: int, guildId: int) -> Optional[Dict]:
         row = self.dbClient.connection.execute(
@@ -226,6 +276,7 @@ class RocketLeagueReport(commands.Cog):
                 rp.externalAccountId,
                 rp.queueType,
                 rp.schedule,
+                rp.channelId,
                 u.discordUserId
             FROM reportPreference rp
             JOIN user u ON u.id = rp.userId
@@ -245,6 +296,7 @@ class RocketLeagueReport(commands.Cog):
                 continue
             externalAccountId = pref.get("externalAccountId")
             userId = pref.get("discordUserId")
+            channelId = pref.get("channelId")
             if not externalAccountId or not userId:
                 continue
             user = self.botClient.get_user(int(userId))
@@ -260,17 +312,20 @@ class RocketLeagueReport(commands.Cog):
             if not accountRow:
                 continue
             epicId = accountRow["externalId"]
-            ranks = await asyncio.to_thread(fetchRocketLeagueRanks, epicId)
-            if not ranks:
+            reportData = await generateDailyReport(
+                self.dbClient, externalAccountId, epicId, datetime.utcnow().strftime("%Y-%m-%d")
+            )
+            if not reportData.get("current"):
                 continue
-            filteredRanks = self.filterRanks(ranks)
-            if not filteredRanks:
+            channel = await self.resolveReportChannel(channelId)
+            if not channel:
+                rocketReportLogger.warning("Missing report channel for Rocket League daily report (user %s).", userId)
                 continue
-            embed = self.buildRanksEmbed(user, epicId, filteredRanks)
+            embed = self.buildDailyReportEmbed(user, epicId, reportData)
             try:
-                await user.send(embed=embed)
+                await channel.send(embed=embed)
             except Exception:
-                rocketReportLogger.exception("Failed to send Rocket League daily report to user %s", userId)
+                rocketReportLogger.exception("Failed to send Rocket League daily report to channel %s", channelId)
 
     @reportLoop.before_loop
     async def beforeReportLoop(self):
@@ -287,6 +342,18 @@ class RocketLeagueReport(commands.Cog):
             return True
         except ValueError:
             return False
+
+    async def resolveReportChannel(self, channelId: Optional[str]) -> Optional[discord.abc.Messageable]:
+        if not channelId:
+            return None
+        channel = self.botClient.get_channel(int(channelId))
+        if channel:
+            return channel
+        try:
+            return await self.botClient.fetch_channel(int(channelId))
+        except Exception:
+            rocketReportLogger.exception("Failed to fetch channel %s for Rocket League daily report", channelId)
+            return None
 
 
 async def setup(botClient: commands.Bot):

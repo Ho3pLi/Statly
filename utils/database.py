@@ -108,6 +108,28 @@ CREATE TABLE IF NOT EXISTS csgoRankSnapshot (
     capturedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS apexRankSnapshot (
+    id INTEGER PRIMARY KEY,
+    externalAccountId INTEGER NOT NULL REFERENCES externalAccount(id) ON DELETE CASCADE,
+    rankName TEXT,
+    rankDiv INTEGER,
+    rankScore INTEGER,
+    ladderPosPlatform INTEGER,
+    rankedSeason TEXT,
+    capturedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS rocketLeagueRankSnapshot (
+    id INTEGER PRIMARY KEY,
+    externalAccountId INTEGER NOT NULL REFERENCES externalAccount(id) ON DELETE CASCADE,
+    playlist TEXT NOT NULL,
+    rank TEXT,
+    division TEXT,
+    mmr INTEGER,
+    streak TEXT,
+    capturedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_externalAccount_game_externalId ON externalAccount (gameId, externalId);
 CREATE INDEX IF NOT EXISTS idx_guildMemberAccount_guildId ON guildMemberAccount (guildId);
 CREATE INDEX IF NOT EXISTS idx_guildMemberAccount_userId ON guildMemberAccount (userId);
@@ -115,6 +137,8 @@ CREATE INDEX IF NOT EXISTS idx_guildMemberAccount_externalAccountId ON guildMemb
 CREATE INDEX IF NOT EXISTS idx_lolRankSnapshot_externalAccountId ON lolRankSnapshot (externalAccountId);
 CREATE INDEX IF NOT EXISTS idx_valorantRankSnapshot_externalAccountId ON valorantRankSnapshot (externalAccountId);
 CREATE INDEX IF NOT EXISTS idx_csgoRankSnapshot_externalAccountId ON csgoRankSnapshot (externalAccountId);
+CREATE INDEX IF NOT EXISTS idx_apexRankSnapshot_externalAccountId ON apexRankSnapshot (externalAccountId);
+CREATE INDEX IF NOT EXISTS idx_rocketLeagueRankSnapshot_externalAccountId ON rocketLeagueRankSnapshot (externalAccountId);
 
 CREATE TABLE IF NOT EXISTS reportPreference (
     id INTEGER PRIMARY KEY,
@@ -123,6 +147,7 @@ CREATE TABLE IF NOT EXISTS reportPreference (
     externalAccountId INTEGER NOT NULL REFERENCES externalAccount(id) ON DELETE CASCADE,
     queueType TEXT NOT NULL DEFAULT 'RANKED_SOLO_5x5',
     schedule TEXT NOT NULL, -- HH:MM in UTC
+    channelId TEXT,
     enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
     createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (guildId, userId, externalAccountId, queueType)
@@ -149,6 +174,7 @@ class DatabaseClient:
         self.ensureColumn("valorantRankSnapshot", "lp", "INTEGER")
         self.ensureColumn("valorantRankSnapshot", "wins", "INTEGER")
         self.ensureColumn("valorantRankSnapshot", "losses", "INTEGER")
+        self.ensureColumn("reportPreference", "channelId", "TEXT")
         self.connection.commit()
 
     def ensureColumn(self, tableName: str, columnName: str, columnType: str) -> None:
@@ -328,6 +354,7 @@ class DatabaseClient:
         externalAccountId: int,
         queueType: str,
         schedule: str,
+        channelId: Optional[str],
         maxPerMinute: int = 25,
     ) -> bool:
         existing = self.getReportPreference(guildId, userId, externalAccountId, queueType)
@@ -341,13 +368,14 @@ class DatabaseClient:
 
         self.connection.execute(
             """
-            INSERT INTO reportPreference (guildId, userId, externalAccountId, queueType, schedule, enabled)
-            VALUES (?, ?, ?, ?, ?, 1)
+            INSERT INTO reportPreference (guildId, userId, externalAccountId, queueType, schedule, channelId, enabled)
+            VALUES (?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT(guildId, userId, externalAccountId, queueType) DO UPDATE SET
                 schedule = excluded.schedule,
+                channelId = excluded.channelId,
                 enabled = 1
             """,
-            (guildId, userId, externalAccountId, queueType, targetSchedule),
+            (guildId, userId, externalAccountId, queueType, targetSchedule, channelId),
         )
         self.connection.commit()
         return True

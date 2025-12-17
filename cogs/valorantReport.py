@@ -140,6 +140,7 @@ class ValorantReport(commands.Cog):
                 rp.externalAccountId,
                 rp.queueType,
                 rp.schedule,
+                rp.channelId,
                 u.discordUserId
             FROM reportPreference rp
             JOIN user u ON u.id = rp.userId
@@ -160,20 +161,29 @@ class ValorantReport(commands.Cog):
             externalAccountId = pref.get("externalAccountId")
             queueType = pref.get("queueType", "COMPETITIVE")
             userId = pref.get("discordUserId")
+            channelId = pref.get("channelId")
             if not externalAccountId or not userId:
                 continue
             user = self.botClient.get_user(int(userId))
             if not user:
-                continue
+                try:
+                    user = await self.botClient.fetch_user(int(userId))
+                except Exception:
+                    valorantReportLogger.exception("Failed to fetch user %s for daily Valorant report", userId)
+                    continue
             reportData = await generateDailyReport(
                 self.dbClient, externalAccountId, queueType, datetime.utcnow().strftime("%Y-%m-%d")
             )
             accountInfo = self.getExternalAccountInfo(externalAccountId)
             embed = self.buildReportEmbed(user, queueType, reportData, accountInfo)
+            channel = await self.resolveReportChannel(channelId)
+            if not channel:
+                valorantReportLogger.warning("Missing report channel for daily Valorant report (user %s).", userId)
+                continue
             try:
-                await user.send(embed=embed)
+                await channel.send(embed=embed)
             except Exception:
-                valorantReportLogger.exception("Failed to send daily Valorant report to user %s", userId)
+                valorantReportLogger.exception("Failed to send daily Valorant report to channel %s", channelId)
 
     @reportLoop.before_loop
     async def beforeReportLoop(self):
@@ -183,6 +193,18 @@ class ValorantReport(commands.Cog):
     async def onReady(self):
         if not self.reportLoop.is_running():
             self.reportLoop.start()
+
+    async def resolveReportChannel(self, channelId: Optional[str]) -> Optional[discord.abc.Messageable]:
+        if not channelId:
+            return None
+        channel = self.botClient.get_channel(int(channelId))
+        if channel:
+            return channel
+        try:
+            return await self.botClient.fetch_channel(int(channelId))
+        except Exception:
+            valorantReportLogger.exception("Failed to fetch channel %s for daily Valorant report", channelId)
+            return None
 
 
 async def setup(botClient: commands.Bot):

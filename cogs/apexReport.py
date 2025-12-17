@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 from config.settings import appSettings
+from services.apexTracking import generateDailyReport
 from services.apex_api import getApexRankSummary
 from utils.database import DatabaseClient
 from utils.logger import getLogger
@@ -50,9 +51,14 @@ class ApexReport(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="reportaddapex", description="Add or update your daily Apex report schedule.")
-    @app_commands.rename(schedule="schedule")
-    @app_commands.describe(schedule="Time in HH:MM UTC (minute capped)")
-    async def reportAddApexCommand(self, interaction: discord.Interaction, schedule: str):
+    @app_commands.rename(schedule="schedule", channel="channel")
+    @app_commands.describe(
+        schedule="Time in HH:MM UTC (minute capped)",
+        channel="Text channel where the daily report will be posted",
+    )
+    async def reportAddApexCommand(
+        self, interaction: discord.Interaction, schedule: str, channel: Optional[discord.TextChannel] = None
+    ):
         if not interaction.guild_id:
             await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
             return
@@ -68,6 +74,13 @@ class ApexReport(commands.Cog):
             await interaction.response.send_message("Schedule must be in HH:MM format (UTC).", ephemeral=True)
             return
 
+        targetChannel = channel or interaction.channel
+        if not isinstance(targetChannel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Please select a text channel for the daily report.", ephemeral=True
+            )
+            return
+
         guildId = self.dbClient.getOrCreateGuild(str(interaction.guild_id), getattr(interaction.guild, "name", None))
         userId = self.dbClient.getOrCreateUser(
             str(interaction.user.id),
@@ -81,6 +94,7 @@ class ApexReport(commands.Cog):
             externalAccountId=externalAccount["externalAccountId"],
             queueType="RANKED_BR",
             schedule=schedule,
+            channelId=str(targetChannel.id),
             maxPerMinute=maxPerMinute,
         )
         if not created:
@@ -123,7 +137,7 @@ class ApexReport(commands.Cog):
 
         rows = self.dbClient.connection.execute(
             """
-            SELECT rp.queueType, rp.schedule, rp.enabled, ea.displayName
+            SELECT rp.queueType, rp.schedule, rp.enabled, rp.channelId, ea.displayName
             FROM reportPreference rp
             JOIN user u ON u.id = rp.userId
             JOIN guild g ON g.id = rp.guildId
@@ -141,8 +155,53 @@ class ApexReport(commands.Cog):
         lines = []
         for row in rows:
             status = "enabled" if row["enabled"] else "disabled"
-            lines.append(f"{row['schedule']} UTC | {row['queueType']} | {row['displayName']} | {status}")
+            channelLabel = f"<#{row['channelId']}>" if row["channelId"] else "N/A"
+            lines.append(
+                f"{row['schedule']} UTC | {row['queueType']} | {row['displayName']} | {channelLabel} | {status}"
+            )
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+    def buildDailyReportEmbed(
+        self, user: discord.abc.User, reportData: Dict, rankData: Dict
+    ) -> discord.Embed:
+        baseline = reportData.get("baseline") or {}
+        current = reportData.get("current") or {}
+        diff = reportData.get("diff") or {}
+
+        description = (
+            f"Player: **{rankData.get('playerName', 'N/A')}** ({rankData.get('platform', 'N/A')})\n"
+            f"Season: **{rankData.get('rankedSeason', 'N/A')}**"
+        )
+        embed = discord.Embed(
+            title="Daily Apex Ranked Report",
+            description=description,
+            color=discord.Color.dark_gold(),
+            timestamp=datetime.utcnow(),
+        )
+        embed.set_author(name=str(user))
+
+        baselineText = (
+            f"{baseline.get('rankName', 'N/A')} {baseline.get('rankDiv') or ''} | "
+            f"RP {baseline.get('rankScore', 'N/A')}"
+        )
+        currentText = (
+            f"{current.get('rankName', 'N/A')} {current.get('rankDiv') or ''} | "
+            f"RP {current.get('rankScore', 'N/A')}"
+        )
+        diffTextParts: List[str] = []
+        diffTextParts.append(f"RP diff: {diff.get('scoreDiff', 0):+}")
+        if diff.get("rankChange"):
+            diffTextParts.append(f"Rank change: {diff.get('rankChange')}")
+        ladderDiff = diff.get("ladderDiff")
+        if ladderDiff is not None:
+            diffTextParts.append(f"Ladder pos diff: {ladderDiff:+}")
+
+        embed.add_field(name="Baseline", value=baselineText, inline=False)
+        embed.add_field(name="Current", value=currentText, inline=False)
+        embed.add_field(name="Diff", value="\n".join(diffTextParts), inline=False)
+        if rankData.get("rankImg"):
+            embed.set_thumbnail(url=rankData["rankImg"])
+        return embed
 
     def buildRankEmbed(self, user: discord.abc.User, rankData: Dict) -> discord.Embed:
         rankName = rankData.get("rankName", "Unknown")
@@ -214,6 +273,7 @@ class ApexReport(commands.Cog):
                 rp.externalAccountId,
                 rp.queueType,
                 rp.schedule,
+                rp.channelId,
                 u.discordUserId
             FROM reportPreference rp
             JOIN user u ON u.id = rp.userId
@@ -233,6 +293,7 @@ class ApexReport(commands.Cog):
                 continue
             externalAccountId = pref.get("externalAccountId")
             userId = pref.get("discordUserId")
+            channelId = pref.get("channelId")
             if not externalAccountId or not userId:
                 continue
             user = self.botClient.get_user(int(userId))
@@ -249,14 +310,21 @@ class ApexReport(commands.Cog):
                 continue
             playerName = accountRow["externalId"]
             platform = accountRow["tagLine"] or "PC"
-            rankData = await asyncio.to_thread(getApexRankSummary, playerName, platform)
+            reportData = await generateDailyReport(
+                self.dbClient, externalAccountId, playerName, platform, datetime.utcnow().strftime("%Y-%m-%d")
+            )
+            rankData = reportData.get("current") or {}
             if not rankData:
                 continue
-            embed = self.buildRankEmbed(user, rankData)
+            channel = await self.resolveReportChannel(channelId)
+            if not channel:
+                apexReportLogger.warning("Missing report channel for Apex daily report (user %s).", userId)
+                continue
+            embed = self.buildDailyReportEmbed(user, reportData, rankData)
             try:
-                await user.send(embed=embed)
+                await channel.send(embed=embed)
             except Exception:
-                apexReportLogger.exception("Failed to send Apex daily report to user %s", userId)
+                apexReportLogger.exception("Failed to send Apex daily report to channel %s", channelId)
 
     @reportLoop.before_loop
     async def beforeReportLoop(self):
@@ -273,6 +341,18 @@ class ApexReport(commands.Cog):
             return True
         except ValueError:
             return False
+
+    async def resolveReportChannel(self, channelId: Optional[str]) -> Optional[discord.abc.Messageable]:
+        if not channelId:
+            return None
+        channel = self.botClient.get_channel(int(channelId))
+        if channel:
+            return channel
+        try:
+            return await self.botClient.fetch_channel(int(channelId))
+        except Exception:
+            apexReportLogger.exception("Failed to fetch channel %s for Apex daily report", channelId)
+            return None
 
 
 async def setup(botClient: commands.Bot):

@@ -127,6 +127,7 @@ class LolReport(commands.Cog):
                 rp.externalAccountId,
                 rp.queueType,
                 rp.schedule,
+                rp.channelId,
                 u.discordUserId
             FROM reportPreference rp
             JOIN user u ON u.id = rp.userId
@@ -147,6 +148,7 @@ class LolReport(commands.Cog):
             externalAccountId = pref.get("externalAccountId")
             queueType = pref.get("queueType", "RANKED_SOLO_5x5")
             userId = pref.get("discordUserId")
+            channelId = pref.get("channelId")
             if not externalAccountId or not userId:
                 continue
             user = self.botClient.get_user(int(userId))
@@ -161,10 +163,14 @@ class LolReport(commands.Cog):
             )
             accountInfo = self.getExternalAccountInfo(externalAccountId)
             embed = self.buildReportEmbed(user, queueType, reportData, accountInfo)
+            channel = await self.resolveReportChannel(channelId)
+            if not channel:
+                lolReportLogger.warning("Missing report channel for daily report (user %s).", userId)
+                continue
             try:
-                await user.send(embed=embed)
+                await channel.send(embed=embed)
             except Exception:
-                lolReportLogger.exception("Failed to send daily report to user %s", userId)
+                lolReportLogger.exception("Failed to send daily report to channel %s", channelId)
 
     @reportLoop.before_loop
     async def beforeReportLoop(self):
@@ -176,12 +182,19 @@ class LolReport(commands.Cog):
             self.reportLoop.start()
 
     @app_commands.command(name="reportadd", description="Add or update your daily report schedule.")
-    @app_commands.rename(queueType="queuetype", schedule="schedule")
+    @app_commands.rename(queueType="queuetype", schedule="schedule", channel="channel")
     @app_commands.describe(
         queueType="Queue type, e.g., RANKED_SOLO_5x5",
         schedule="Time in HH:MM UTC (minute capped at 25 users)",
+        channel="Text channel where the daily report will be posted",
     )
-    async def reportAddCommand(self, interaction: discord.Interaction, queueType: str, schedule: str):
+    async def reportAddCommand(
+        self,
+        interaction: discord.Interaction,
+        queueType: str,
+        schedule: str,
+        channel: Optional[discord.TextChannel] = None,
+    ):
         if not interaction.guild_id:
             await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
             return
@@ -195,6 +208,13 @@ class LolReport(commands.Cog):
 
         if not self.isValidSchedule(schedule):
             await interaction.response.send_message("Schedule must be in HH:MM format (UTC).", ephemeral=True)
+            return
+
+        targetChannel = channel or interaction.channel
+        if not isinstance(targetChannel, discord.TextChannel):
+            await interaction.response.send_message(
+                "Please select a text channel for the daily report.", ephemeral=True
+            )
             return
 
         guildId = self.dbClient.getOrCreateGuild(str(interaction.guild_id), getattr(interaction.guild, "name", None))
@@ -211,6 +231,7 @@ class LolReport(commands.Cog):
             externalAccountId=externalAccountId,
             queueType=queueType,
             schedule=schedule,
+            channelId=str(targetChannel.id),
             maxPerMinute=maxPerMinute,
         )
         if not created:
@@ -232,7 +253,7 @@ class LolReport(commands.Cog):
 
         rows = self.dbClient.connection.execute(
             """
-            SELECT rp.queueType, rp.schedule, rp.enabled, ea.displayName, ea.tagLine, ea.region
+            SELECT rp.queueType, rp.schedule, rp.enabled, rp.channelId, ea.displayName, ea.tagLine, ea.region
             FROM reportPreference rp
             JOIN user u ON u.id = rp.userId
             JOIN guild g ON g.id = rp.guildId
@@ -252,8 +273,9 @@ class LolReport(commands.Cog):
             tag = f"#{row['tagLine']}" if row["tagLine"] else ""
             region = f" ({row['region']})" if row["region"] else ""
             status = "enabled" if row["enabled"] else "disabled"
+            channelLabel = f"<#{row['channelId']}>" if row["channelId"] else "N/A"
             lines.append(
-                f"{row['schedule']} UTC | {row['queueType']} | {row['displayName']}{tag}{region} | {status}"
+                f"{row['schedule']} UTC | {row['queueType']} | {row['displayName']}{tag}{region} | {channelLabel} | {status}"
             )
 
         await interaction.response.send_message("\n".join(lines), ephemeral=True)
@@ -302,6 +324,18 @@ class LolReport(commands.Cog):
             (externalAccountId,),
         ).fetchone()
         return dict(row) if row else None
+
+    async def resolveReportChannel(self, channelId: Optional[str]) -> Optional[discord.abc.Messageable]:
+        if not channelId:
+            return None
+        channel = self.botClient.get_channel(int(channelId))
+        if channel:
+            return channel
+        try:
+            return await self.botClient.fetch_channel(int(channelId))
+        except Exception:
+            lolReportLogger.exception("Failed to fetch channel %s for daily report", channelId)
+            return None
 
 
 async def setup(botClient: commands.Bot):
