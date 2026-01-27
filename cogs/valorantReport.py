@@ -19,7 +19,7 @@ class ValorantReport(commands.Cog):
         self.botClient = botClient
         self.dbClient = DatabaseClient(appSettings.databasePath)
 
-    @app_commands.command(name="valorantreport", description="Send your daily Valorant ranked report (mock data).")
+    @app_commands.command(name="valorantreport", description="Send your daily Valorant ranked report.")
     async def valorantReportCommand(self, interaction: discord.Interaction):
         queueType = "COMPETITIVE"
         externalAccountId = self.getPrimaryValorantAccountId(interaction.user.id, interaction.guild_id)

@@ -1,12 +1,7 @@
-from datetime import datetime
 from typing import Dict, Optional
 
-from services.riot_api import fetchCurrentValorantRank
+from services.riot_api import fetchValorantDailySnapshot
 from utils.database import DatabaseClient
-from utils.logger import getLogger
-
-
-valorantTrackingLogger = getLogger(__name__)
 
 VALORANT_TIER_ORDER = [
     "IRON",
@@ -21,75 +16,17 @@ VALORANT_TIER_ORDER = [
 ]
 
 
-def rowToDict(row) -> Dict:
-    return {key: row[key] for key in row.keys()}
-
-
-async def getOrCreateDailyBaseline(
-    dbClient: DatabaseClient, externalAccountId: int, queueType: str, todayDateStr: str
+async def getDailySnapshot(
+    externalAccountId: int, queueType: str, todayDateStr: str
 ) -> Optional[Dict]:
-    baselineRow = dbClient.connection.execute(
-        """
-        SELECT * FROM valorantRankSnapshot
-        WHERE externalAccountId = ? AND queueType = ? AND date(capturedAt) = ?
-        ORDER BY capturedAt ASC
-        LIMIT 1
-        """,
-        (externalAccountId, queueType, todayDateStr),
-    ).fetchone()
-
-    if baselineRow:
-        return rowToDict(baselineRow)
-
-    current = await fetchCurrentValorantRank(externalAccountId, queueType)
-    if not current:
+    snapshot = await fetchValorantDailySnapshot(externalAccountId, todayDateStr)
+    if not snapshot:
         return None
-
-    nowStr = datetime.utcnow().isoformat()
-    dbClient.connection.execute(
-        """
-        INSERT INTO valorantRankSnapshot (externalAccountId, queueType, tier, division, lp, wins, losses, capturedAt)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            externalAccountId,
-            queueType,
-            current.get("tier"),
-            current.get("division"),
-            current.get("lp"),
-            current.get("wins"),
-            current.get("losses"),
-            nowStr,
-        ),
-    )
-    dbClient.connection.commit()
-
-    return {
-        "id": dbClient.connection.execute("SELECT last_insert_rowid() as id").fetchone()["id"],
-        "externalAccountId": externalAccountId,
-        "queueType": queueType,
-        "tier": current.get("tier"),
-        "division": current.get("division"),
-        "lp": current.get("lp"),
-        "wins": current.get("wins"),
-        "losses": current.get("losses"),
-        "capturedAt": nowStr,
-    }
-
-
-async def getCurrentState(dbClient: DatabaseClient, externalAccountId: int, queueType: str) -> Optional[Dict]:
-    current = await fetchCurrentValorantRank(externalAccountId, queueType)
-    if not current:
-        return None
-    return {
-        "externalAccountId": externalAccountId,
-        "queueType": queueType,
-        "tier": current.get("tier"),
-        "division": current.get("division"),
-        "lp": current.get("lp"),
-        "wins": current.get("wins"),
-        "losses": current.get("losses"),
-    }
+    baseline = snapshot.get("baseline") or {}
+    current = snapshot.get("current") or {}
+    baseline["queueType"] = queueType
+    current["queueType"] = queueType
+    return {"baseline": baseline, "current": current}
 
 
 def computeRankDiff(baseline: Dict, current: Dict) -> Dict:
@@ -139,8 +76,8 @@ def computeRankDiff(baseline: Dict, current: Dict) -> Dict:
 async def generateDailyReport(
     dbClient: DatabaseClient, externalAccountId: int, queueType: str, todayDateStr: str
 ) -> Dict:
-    baseline = await getOrCreateDailyBaseline(dbClient, externalAccountId, queueType, todayDateStr)
-    current = await getCurrentState(dbClient, externalAccountId, queueType)
+    snapshot = await getDailySnapshot(externalAccountId, queueType, todayDateStr)
+    baseline = (snapshot or {}).get("baseline") or {}
+    current = (snapshot or {}).get("current") or {}
     diff = computeRankDiff(baseline or {}, current or {})
-
     return {"baseline": baseline, "current": current, "diff": diff}

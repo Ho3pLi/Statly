@@ -15,6 +15,7 @@ class Settings:
     databasePath: str = os.getenv("DATABASE_PATH", "data/statly.db")
     apexApiKey: str = os.getenv("APEX_API_KEY", "")
     rocketLeagueApiKey: str = os.getenv("ROCKET_LEAGUE_API_KEY", "")
+    valorantApiKey: str = os.getenv("VALORANT_API_KEY", "")
     reportMaxRequestsPerMinute: int = int(os.getenv("REPORT_MAX_REQUESTS_PER_MINUTE", "100"))
     reportCallsPerDelivery: int = int(os.getenv("REPORT_CALLS_PER_DELIVERY", "2"))
 
