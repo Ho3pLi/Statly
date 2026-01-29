@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -93,6 +94,25 @@ CREATE TABLE IF NOT EXISTS valorantRankSnapshot (
     capturedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS valorantGroup (
+    id INTEGER PRIMARY KEY,
+    guildId INTEGER NOT NULL REFERENCES guild(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    createdByUserId INTEGER REFERENCES user(id) ON DELETE SET NULL,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (guildId, name)
+);
+
+CREATE TABLE IF NOT EXISTS valorantGroupMember (
+    id INTEGER PRIMARY KEY,
+    groupId INTEGER NOT NULL REFERENCES valorantGroup(id) ON DELETE CASCADE,
+    displayName TEXT NOT NULL,
+    tagLine TEXT NOT NULL,
+    region TEXT,
+    createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (groupId, displayName, tagLine)
+);
+
 CREATE TABLE IF NOT EXISTS csgoProfile (
     id INTEGER PRIMARY KEY,
     externalAccountId INTEGER NOT NULL UNIQUE REFERENCES externalAccount(id) ON DELETE CASCADE,
@@ -136,6 +156,8 @@ CREATE INDEX IF NOT EXISTS idx_guildMemberAccount_userId ON guildMemberAccount (
 CREATE INDEX IF NOT EXISTS idx_guildMemberAccount_externalAccountId ON guildMemberAccount (externalAccountId);
 CREATE INDEX IF NOT EXISTS idx_lolRankSnapshot_externalAccountId ON lolRankSnapshot (externalAccountId);
 CREATE INDEX IF NOT EXISTS idx_valorantRankSnapshot_externalAccountId ON valorantRankSnapshot (externalAccountId);
+CREATE INDEX IF NOT EXISTS idx_valorantGroup_guildId ON valorantGroup (guildId);
+CREATE INDEX IF NOT EXISTS idx_valorantGroupMember_groupId ON valorantGroupMember (groupId);
 CREATE INDEX IF NOT EXISTS idx_csgoRankSnapshot_externalAccountId ON csgoRankSnapshot (externalAccountId);
 CREATE INDEX IF NOT EXISTS idx_apexRankSnapshot_externalAccountId ON apexRankSnapshot (externalAccountId);
 CREATE INDEX IF NOT EXISTS idx_rocketLeagueRankSnapshot_externalAccountId ON rocketLeagueRankSnapshot (externalAccountId);
@@ -159,6 +181,10 @@ CREATE INDEX IF NOT EXISTS idx_reportPreference_enabled ON reportPreference (ena
 
 
 class DatabaseClient:
+    def normalizeGroupName(self, name: str) -> str:
+        cleaned = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", name or "")
+        return re.sub(r"\s+", "", cleaned).strip().lower()
+
     def __init__(self, dbPath: str):
         self.dbPath = Path(dbPath)
         self.dbPath.parent.mkdir(parents=True, exist_ok=True)
@@ -391,3 +417,154 @@ class DatabaseClient:
         )
         self.connection.commit()
         return True
+
+    def getOrCreateValorantGroup(self, guildId: int, name: str, createdByUserId: Optional[int]) -> int:
+        normalized = self.normalizeGroupName(name)
+        existing = self.connection.execute(
+            "SELECT id FROM valorantGroup WHERE guildId = ? AND lower(trim(name)) = lower(trim(?))",
+            (guildId, name),
+        ).fetchone()
+        if existing:
+            trimmed = name.strip()
+            self.connection.execute(
+                """
+                UPDATE valorantGroup
+                SET name = ?,
+                    createdByUserId = COALESCE(?, createdByUserId)
+                WHERE id = ?
+                """,
+                (trimmed, createdByUserId, int(existing["id"])),
+            )
+            self.connection.commit()
+            return int(existing["id"])
+        rows = self.connection.execute(
+            "SELECT id, name FROM valorantGroup WHERE guildId = ?",
+            (guildId,),
+        ).fetchall()
+        for row in rows:
+            if self.normalizeGroupName(row["name"]) == normalized:
+                display_name = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", name or "").strip()
+                self.connection.execute(
+                    """
+                    UPDATE valorantGroup
+                    SET name = ?,
+                        createdByUserId = COALESCE(?, createdByUserId)
+                    WHERE id = ?
+                    """,
+                    (display_name, createdByUserId, int(row["id"])),
+                )
+                self.connection.commit()
+                return int(row["id"])
+        trimmed = name.strip()
+        cursor = self.connection.execute(
+            "INSERT OR IGNORE INTO valorantGroup (guildId, name, createdByUserId) VALUES (?, ?, ?)",
+            (guildId, trimmed, createdByUserId),
+        )
+        if cursor.lastrowid:
+            self.connection.commit()
+            return cursor.lastrowid
+        self.connection.execute(
+            """
+            UPDATE valorantGroup
+            SET name = COALESCE(?, name),
+                createdByUserId = COALESCE(?, createdByUserId)
+            WHERE guildId = ? AND lower(trim(name)) = lower(trim(?))
+            """,
+            (trimmed, createdByUserId, guildId, name),
+        )
+        self.connection.commit()
+        existing = self.connection.execute(
+            "SELECT id FROM valorantGroup WHERE guildId = ? AND lower(trim(name)) = lower(trim(?))",
+            (guildId, name),
+        ).fetchone()
+        return int(existing["id"])
+
+    def getValorantGroup(self, guildId: int, name: str) -> Optional[sqlite3.Row]:
+        row = self.connection.execute(
+            "SELECT id, name FROM valorantGroup WHERE guildId = ? AND lower(trim(name)) = lower(trim(?))",
+            (guildId, name),
+        ).fetchone()
+        if row:
+            return row
+        normalized = self.normalizeGroupName(name)
+        rows = self.connection.execute(
+            "SELECT id, name FROM valorantGroup WHERE guildId = ?",
+            (guildId,),
+        ).fetchall()
+        for candidate in rows:
+            if self.normalizeGroupName(candidate["name"]) == normalized:
+                return candidate
+        return None
+
+    def listValorantGroups(self, guildId: int) -> list[str]:
+        rows = self.connection.execute(
+            "SELECT name FROM valorantGroup WHERE guildId = ? ORDER BY name ASC",
+            (guildId,),
+        ).fetchall()
+        return [row["name"] for row in rows]
+
+    def replaceValorantGroupMembers(
+        self, groupId: int, members: list[dict]
+    ) -> None:
+        self.connection.execute(
+            "DELETE FROM valorantGroupMember WHERE groupId = ?",
+            (groupId,),
+        )
+        self.connection.executemany(
+            """
+            INSERT OR IGNORE INTO valorantGroupMember (groupId, displayName, tagLine, region)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (groupId, member["displayName"], member["tagLine"], member.get("region"))
+                for member in members
+            ],
+        )
+        self.connection.commit()
+
+    def getValorantGroupMembers(self, groupId: int) -> list[dict]:
+        rows = self.connection.execute(
+            """
+            SELECT displayName, tagLine, region
+            FROM valorantGroupMember
+            WHERE groupId = ?
+            ORDER BY displayName ASC, tagLine ASC
+            """,
+            (groupId,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def addValorantGroupMembers(self, groupId: int, members: list[dict]) -> None:
+        if not members:
+            return
+        self.connection.executemany(
+            """
+            INSERT OR IGNORE INTO valorantGroupMember (groupId, displayName, tagLine, region)
+            VALUES (?, ?, ?, ?)
+            """,
+            [
+                (groupId, member["displayName"], member["tagLine"], member.get("region"))
+                for member in members
+            ],
+        )
+        self.connection.commit()
+
+    def removeValorantGroupMembers(self, groupId: int, members: list[dict]) -> int:
+        if not members:
+            return 0
+        cursor = self.connection.executemany(
+            """
+            DELETE FROM valorantGroupMember
+            WHERE groupId = ? AND lower(displayName) = lower(?) AND lower(tagLine) = lower(?)
+            """,
+            [
+                (groupId, member["displayName"], member["tagLine"])
+                for member in members
+            ],
+        )
+        self.connection.commit()
+        return cursor.rowcount or 0
+
+    def deleteValorantGroup(self, groupId: int) -> None:
+        self.connection.execute("DELETE FROM valorantGroup WHERE id = ?", (groupId,))
+        self.connection.commit()

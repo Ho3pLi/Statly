@@ -146,6 +146,15 @@ async def fetchValorantDailySnapshot(externalAccountId: int, todayDateStr: str) 
     }
 
 
+async def fetchValorantDailySnapshotByNameTag(
+    apiKey: str, region: str, platform: str, gameName: str, tagLine: str, todayDateStr: str
+) -> Optional[Dict]:
+    payload = await asyncio.to_thread(
+        fetchValorantMmrHistoryByNameTag, apiKey, region, platform, gameName, tagLine
+    )
+    return buildValorantDailySnapshotFromHistory(payload, todayDateStr)
+
+
 def resolveValorantRegion(region: str) -> str:
     regionLower = (region or "").lower()
     if regionLower in {"eu", "na", "latam", "br", "ap", "kr"}:
@@ -213,6 +222,86 @@ def fetchValorantMmrHistoryByPuuid(
     except requests.RequestException as error:
         riotApiLogger.error("Request error in fetchValorantMmrHistoryByPuuid: %s", error)
     return None
+
+
+def buildValorantDailySnapshotFromHistory(data: Optional[Dict], todayDateStr: str) -> Optional[Dict]:
+    if not data:
+        return None
+    history = data.get("history") if isinstance(data, dict) else None
+    if not isinstance(history, list) or not history:
+        return None
+
+    latest = history[0]
+    latest_tier_name = (latest.get("tier") or {}).get("name")
+    current_tier, current_division = parseValorantTier(latest_tier_name)
+    current_rr = latest.get("rr")
+
+    today_entries = []
+    for entry in history:
+        entry_date = parseValorantDate(entry.get("date"))
+        if entry_date == todayDateStr:
+            today_entries.append(entry)
+
+    lp_diff = 0
+    for entry in today_entries:
+        try:
+            lp_diff += int(entry.get("last_change") or 0)
+        except (TypeError, ValueError):
+            continue
+
+    baseline_entry = None
+    for entry in history:
+        entry_date = parseValorantDate(entry.get("date"))
+        if entry_date and entry_date < todayDateStr:
+            baseline_entry = entry
+            break
+
+    if baseline_entry:
+        baseline_tier_name = (baseline_entry.get("tier") or {}).get("name")
+        baseline_tier, baseline_division = parseValorantTier(baseline_tier_name)
+        baseline_rr = baseline_entry.get("rr")
+    else:
+        baseline_tier, baseline_division = current_tier, current_division
+        baseline_rr = None
+        if current_rr is not None:
+            baseline_rr = current_rr - lp_diff
+
+    return {
+        "baseline": {
+            "tier": baseline_tier,
+            "division": baseline_division,
+            "lp": baseline_rr,
+        },
+        "current": {
+            "tier": current_tier,
+            "division": current_division,
+            "lp": current_rr,
+        },
+        "lpDiff": lp_diff,
+    }
+
+
+def fetchValorantCurrentRankByNameTag(
+    apiKey: str, region: str, platform: str, gameName: str, tagLine: str
+) -> Optional[Dict]:
+    data = fetchValorantMmrHistoryByNameTag(apiKey, region, platform, gameName, tagLine)
+    return extractValorantCurrentRank(data)
+
+
+def extractValorantCurrentRank(data: Optional[Dict]) -> Optional[Dict]:
+    if not isinstance(data, dict):
+        return None
+    history = data.get("history")
+    if not isinstance(history, list) or not history:
+        return None
+    latest = history[0]
+    tier_name = (latest.get("tier") or {}).get("name")
+    tier, division = parseValorantTier(tier_name)
+    return {
+        "tier": tier,
+        "division": division,
+        "lp": latest.get("rr"),
+    }
 
 
 def parseValorantTier(tierName: Optional[str]) -> tuple[Optional[str], Optional[str]]:
