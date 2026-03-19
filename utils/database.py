@@ -190,6 +190,7 @@ class DatabaseClient:
         self.dbPath.parent.mkdir(parents=True, exist_ok=True)
         self.connection = sqlite3.connect(self.dbPath)
         self.connection.row_factory = sqlite3.Row
+        dbLogger.info("Using SQLite database at %s", self.dbPath.resolve())
         self.ensureSchema()
 
     def ensureSchema(self) -> None:
@@ -212,9 +213,10 @@ class DatabaseClient:
         cursor = self.connection.execute(
             "INSERT OR IGNORE INTO game (code, name) VALUES (?, ?)", (code, name)
         )
-        if cursor.lastrowid:
+        if cursor.rowcount and cursor.rowcount > 0:
             self.connection.commit()
-            return cursor.lastrowid
+            created = self.connection.execute("SELECT id FROM game WHERE code = ?", (code,)).fetchone()
+            return int(created["id"])
         existing = self.connection.execute("SELECT id FROM game WHERE code = ?", (code,)).fetchone()
         return int(existing["id"])
 
@@ -223,9 +225,12 @@ class DatabaseClient:
             "INSERT OR IGNORE INTO guild (discordGuildId, name) VALUES (?, ?)",
             (discordGuildId, name),
         )
-        if cursor.lastrowid:
+        if cursor.rowcount and cursor.rowcount > 0:
             self.connection.commit()
-            return cursor.lastrowid
+            created = self.connection.execute(
+                "SELECT id FROM guild WHERE discordGuildId = ?", (discordGuildId,)
+            ).fetchone()
+            return int(created["id"])
         self.connection.execute(
             "UPDATE guild SET name = COALESCE(?, name) WHERE discordGuildId = ?",
             (name, discordGuildId),
@@ -241,9 +246,12 @@ class DatabaseClient:
             "INSERT OR IGNORE INTO user (discordUserId, username, discriminator) VALUES (?, ?, ?)",
             (discordUserId, username, discriminator),
         )
-        if cursor.lastrowid:
+        if cursor.rowcount and cursor.rowcount > 0:
             self.connection.commit()
-            return cursor.lastrowid
+            created = self.connection.execute(
+                "SELECT id FROM user WHERE discordUserId = ?", (discordUserId,)
+            ).fetchone()
+            return int(created["id"])
         self.connection.execute(
             "UPDATE user SET username = COALESCE(?, username), discriminator = COALESCE(?, discriminator) WHERE discordUserId = ?",
             (username, discriminator, discordUserId),
@@ -266,9 +274,13 @@ class DatabaseClient:
             "INSERT OR IGNORE INTO externalAccount (gameId, externalId, displayName, tagLine, region) VALUES (?, ?, ?, ?, ?)",
             (gameId, externalId, displayName, tagLine, region),
         )
-        if cursor.lastrowid:
+        if cursor.rowcount and cursor.rowcount > 0:
             self.connection.commit()
-            return cursor.lastrowid
+            created = self.connection.execute(
+                "SELECT id FROM externalAccount WHERE gameId = ? AND externalId = ?",
+                (gameId, externalId),
+            ).fetchone()
+            return int(created["id"])
         self.connection.execute(
             "UPDATE externalAccount SET displayName = COALESCE(?, displayName), tagLine = COALESCE(?, tagLine), region = COALESCE(?, region) WHERE gameId = ? AND externalId = ?",
             (displayName, tagLine, region, gameId, externalId),
@@ -460,9 +472,13 @@ class DatabaseClient:
             "INSERT OR IGNORE INTO valorantGroup (guildId, name, createdByUserId) VALUES (?, ?, ?)",
             (guildId, trimmed, createdByUserId),
         )
-        if cursor.lastrowid:
+        if cursor.rowcount and cursor.rowcount > 0:
             self.connection.commit()
-            return cursor.lastrowid
+            created = self.connection.execute(
+                "SELECT id FROM valorantGroup WHERE guildId = ? AND lower(trim(name)) = lower(trim(?))",
+                (guildId, trimmed),
+            ).fetchone()
+            return int(created["id"])
         self.connection.execute(
             """
             UPDATE valorantGroup
@@ -480,11 +496,22 @@ class DatabaseClient:
         return int(existing["id"])
 
     def getValorantGroup(self, guildId: int, name: str) -> Optional[sqlite3.Row]:
+        dbLogger.info(
+            "Looking up Valorant group '%s' for guildId=%s in %s",
+            name,
+            guildId,
+            self.dbPath.resolve(),
+        )
         row = self.connection.execute(
             "SELECT id, name FROM valorantGroup WHERE guildId = ? AND lower(trim(name)) = lower(trim(?))",
             (guildId, name),
         ).fetchone()
         if row:
+            dbLogger.info(
+                "Matched Valorant group '%s' for guildId=%s with direct lookup",
+                row["name"],
+                guildId,
+            )
             return row
         normalized = self.normalizeGroupName(name)
         rows = self.connection.execute(
@@ -493,7 +520,18 @@ class DatabaseClient:
         ).fetchall()
         for candidate in rows:
             if self.normalizeGroupName(candidate["name"]) == normalized:
+                dbLogger.info(
+                    "Matched Valorant group '%s' for guildId=%s with normalized lookup",
+                    candidate["name"],
+                    guildId,
+                )
                 return candidate
+        dbLogger.warning(
+            "Valorant group '%s' not found for guildId=%s. Available groups: %s",
+            name,
+            guildId,
+            [row["name"] for row in rows],
+        )
         return None
 
     def listValorantGroups(self, guildId: int) -> list[str]:

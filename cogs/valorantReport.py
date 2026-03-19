@@ -115,6 +115,13 @@ class ValorantReport(commands.Cog):
         await interaction.response.defer()
 
         guildId = self.dbClient.getOrCreateGuild(str(interaction.guild_id), getattr(interaction.guild, "name", None))
+        valorantReportLogger.info(
+            "groupreport requested by discordUserId=%s discordGuildId=%s internalGuildId=%s groupName='%s'",
+            interaction.user.id,
+            interaction.guild_id,
+            guildId,
+            groupName,
+        )
         groupRow = self.dbClient.getValorantGroup(guildId, groupName)
         if not groupRow:
             available = self.dbClient.listValorantGroups(guildId)
@@ -229,6 +236,13 @@ class ValorantReport(commands.Cog):
             return
 
         guildId = self.dbClient.getOrCreateGuild(str(interaction.guild_id), getattr(interaction.guild, "name", None))
+        valorantReportLogger.info(
+            "groupaddmembers requested by discordUserId=%s discordGuildId=%s internalGuildId=%s groupName='%s'",
+            interaction.user.id,
+            interaction.guild_id,
+            guildId,
+            groupName,
+        )
         groupRow = self.dbClient.getValorantGroup(guildId, groupName)
         if not groupRow:
             await interaction.response.send_message(
