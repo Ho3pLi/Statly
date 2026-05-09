@@ -28,6 +28,19 @@ from utils.logger import getLogger
 
 valorantReportLogger = getLogger(__name__)
 
+VALORANT_ROLE_TIERS = ["iron", "bronze", "silver", "gold", "platinum", "diamond", "ascendant", "immortal", "radiant"]
+VALORANT_DEFAULT_ROLE_IDS = {
+    "radiant": 1502632604070055936,
+    "immortal": 1502632539376975953,
+    "ascendant": 1502632469935951963,
+    "diamond": 1502632293011951750,
+    "platinum": 1502632148451066017,
+    "gold": 1502631975222120488,
+    "silver": 1502631902698278952,
+    "bronze": 1502443610921238650,
+    "iron": 1502631794326110348,
+}
+
 
 class ValorantReport(commands.Cog):
     def __init__(self, botClient: commands.Bot):
@@ -251,6 +264,113 @@ class ValorantReport(commands.Cog):
         self.dbClient.deleteValorantGroup(int(groupRow["id"]))
         await interaction.response.send_message(f"Group **{groupRow['name']}** deleted.")
 
+    @app_commands.command(name="getrank", description="Fetch your current Valorant rank and update your rank role.")
+    async def getRankCommand(self, interaction: discord.Interaction):
+        if not interaction.guild_id or not interaction.guild:
+            await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
+            return
+        if not appSettings.valorantApiKey:
+            await interaction.response.send_message(
+                "VALORANT_API_KEY is not configured. Please contact an admin.", ephemeral=True
+            )
+            return
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("Could not resolve your server member profile.", ephemeral=True)
+            return
+        me = interaction.guild.me
+        if not me:
+            await interaction.response.send_message("Bot member not available in this guild.", ephemeral=True)
+            return
+        if not me.guild_permissions.manage_roles:
+            await interaction.response.send_message(
+                "I need the `Manage Roles` permission to update rank roles.", ephemeral=True
+            )
+            return
+
+        externalAccountId = self.getPrimaryValorantAccountId(interaction.user.id, interaction.guild_id)
+        if not externalAccountId:
+            await interaction.response.send_message(
+                "No linked Valorant account found for you in this server.", ephemeral=True
+            )
+            return
+        accountInfo = self.getExternalAccountInfo(externalAccountId)
+        if not accountInfo:
+            await interaction.response.send_message("Linked account data is missing. Re-run /register.", ephemeral=True)
+            return
+
+        displayName = accountInfo.get("displayName")
+        tagLine = accountInfo.get("tagLine")
+        if not displayName or not tagLine:
+            await interaction.response.send_message(
+                "Linked Valorant account is incomplete (missing Riot ID). Re-run /register.", ephemeral=True
+            )
+            return
+        region = resolveValorantRegion(accountInfo.get("region") or appSettings.riotRegion)
+
+        await interaction.response.defer(ephemeral=True)
+        rankData = await asyncio.to_thread(
+            fetchValorantCurrentRankByNameTag,
+            appSettings.valorantApiKey,
+            region,
+            "pc",
+            displayName,
+            tagLine,
+        )
+        if not rankData:
+            await interaction.followup.send("Could not fetch your Valorant rank right now. Please try again later.", ephemeral=True)
+            return
+
+        tierRaw = rankData.get("tier")
+        tierKey = str(tierRaw).strip().lower() if tierRaw else "unranked"
+        targetRole = self.resolveValorantRole(interaction.guild, tierKey)
+        rankRoles = self.getValorantRankRoles(interaction.guild)
+
+        if not targetRole and tierKey != "unranked":
+            await interaction.followup.send(
+                f"Your rank is **{self.formatRank(rankData.get('tier'), rankData.get('division'))}**, "
+                "but I could not find the matching role in this server.",
+                ephemeral=True,
+            )
+            return
+
+        rolesToRemove = [role for role in rankRoles if role in interaction.user.roles and role != targetRole]
+        if any(role >= me.top_role for role in rolesToRemove):
+            await interaction.followup.send(
+                "I can't remove one or more rank roles because they are above my highest role.", ephemeral=True
+            )
+            return
+        if targetRole and targetRole >= me.top_role:
+            await interaction.followup.send(
+                f"I can't assign **{targetRole.name}** because it is above my highest role.", ephemeral=True
+            )
+            return
+
+        try:
+            if rolesToRemove:
+                await interaction.user.remove_roles(*rolesToRemove, reason="Valorant /getrank role sync")
+            if targetRole and targetRole not in interaction.user.roles:
+                await interaction.user.add_roles(targetRole, reason="Valorant /getrank role sync")
+        except discord.Forbidden:
+            await interaction.followup.send("I don't have permission to update your roles.", ephemeral=True)
+            return
+        except discord.HTTPException:
+            await interaction.followup.send("Discord error while updating roles. Please try again.", ephemeral=True)
+            return
+
+        rankLabel = self.formatRank(rankData.get("tier"), rankData.get("division"))
+        rr = rankData.get("lp")
+        rrLabel = f"{rr} RR" if rr is not None else "RR N/A"
+        if targetRole:
+            await interaction.followup.send(
+                f"Rank synced: **{rankLabel}** ({rrLabel}). Assigned role: **{targetRole.name}**.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            f"Rank synced: **{rankLabel}** ({rrLabel}). No rank role assigned for this tier.",
+            ephemeral=True,
+        )
+
     @app_commands.command(name="groupaddmembers", description="Add Riot IDs to an existing Valorant group.")
     @app_commands.rename(groupName="groupname", members="members", region="region")
     @app_commands.describe(
@@ -373,10 +493,13 @@ class ValorantReport(commands.Cog):
         summary = reportData.get("summary") or {}
 
         accountLabel = "Unknown account"
-        if accountInfo:
-            tag = f"#{accountInfo.get('tagLine')}" if accountInfo.get("tagLine") else ""
-            region = f" ({accountInfo.get('region')})" if accountInfo.get("region") else ""
-            accountLabel = f"{accountInfo.get('displayName', 'Unknown')}{tag}{region}"
+        displayName = summary.get("displayName") or (accountInfo.get("displayName") if accountInfo else None)
+        tagLine = summary.get("tagLine") or (accountInfo.get("tagLine") if accountInfo else None)
+        regionValue = summary.get("region") or (accountInfo.get("region") if accountInfo else None)
+        if displayName or tagLine or regionValue:
+            tag = f"#{tagLine}" if tagLine else ""
+            region = f" ({regionValue})" if regionValue else ""
+            accountLabel = f"{displayName or 'Unknown'}{tag}{region}"
 
         periodLabel = self.formatPeriodLabel(summary.get("startAt"), summary.get("endAt"))
         embed = discord.Embed(
@@ -540,6 +663,22 @@ class ValorantReport(commands.Cog):
             (externalAccountId,),
         ).fetchone()
         return dict(row) if row else None
+
+    def resolveValorantRole(self, guild: discord.Guild, tierKey: str) -> Optional[discord.Role]:
+        roleId = VALORANT_DEFAULT_ROLE_IDS.get(tierKey)
+        if roleId:
+            role = guild.get_role(roleId)
+            if role:
+                return role
+        return discord.utils.find(lambda r: r.name.strip().lower() == tierKey, guild.roles)
+
+    def getValorantRankRoles(self, guild: discord.Guild) -> List[discord.Role]:
+        roles: List[discord.Role] = []
+        for tier in VALORANT_ROLE_TIERS:
+            role = self.resolveValorantRole(guild, tier)
+            if role and role not in roles:
+                roles.append(role)
+        return roles
 
     def parseRiotIdList(self, raw: str) -> Tuple[List[Dict], List[str]]:
         parts = re.split(r"[,\n;]+", raw)

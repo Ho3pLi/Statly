@@ -63,6 +63,24 @@ async def fetchStoredHistory(dbClient: DatabaseClient, externalAccountId: int) -
     if not payload:
         return None
 
+    payloadName = payload.get("name")
+    payloadTag = payload.get("tag")
+    if payloadName or payloadTag:
+        dbClient.connection.execute(
+            """
+            UPDATE externalAccount
+            SET displayName = COALESCE(?, displayName),
+                tagLine = COALESCE(?, tagLine)
+            WHERE id = ?
+            """,
+            (payloadName, payloadTag, externalAccountId),
+        )
+        dbClient.connection.commit()
+        if payloadName:
+            accountRow["displayName"] = payloadName
+        if payloadTag:
+            accountRow["tagLine"] = payloadTag
+
     return {
         "payload": payload,
         "displayName": accountRow["displayName"],
