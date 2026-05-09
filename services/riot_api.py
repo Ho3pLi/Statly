@@ -204,6 +204,39 @@ def fetchValorantMmrHistoryByNameTag(
     return None
 
 
+async def fetchValorantStoredMmrHistoryByPuuid(region: str, puuid: str) -> Optional[Dict]:
+    apiKey = appSettings.valorantApiKey
+    if not apiKey:
+        riotApiLogger.error("VALORANT_API_KEY is not configured.")
+        return None
+    return await asyncio.to_thread(fetchStoredValorantMmrHistoryByPuuid, apiKey, region, puuid)
+
+
+def fetchStoredValorantMmrHistoryByPuuid(apiKey: str, region: str, puuid: str) -> Optional[Dict]:
+    safePuuid = quote(puuid, safe="")
+    url = f"https://api.henrikdev.xyz/valorant/v1/by-puuid/stored-mmr-history/{region}/{safePuuid}"
+    headers = {"Authorization": apiKey}
+    try:
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code == 200:
+            payload = response.json()
+            data = payload.get("data")
+            if isinstance(data, list):
+                return payload
+            riotApiLogger.warning(
+                "Unexpected stored Valorant MMR history payload: data=%s status=%s",
+                type(data).__name__,
+                payload.get("status"),
+            )
+            return None
+        riotApiLogger.error(
+            "Failed to fetch stored Valorant MMR history (puuid): %s %s", response.status_code, response.text
+        )
+    except requests.RequestException as error:
+        riotApiLogger.error("Request error in fetchStoredValorantMmrHistoryByPuuid: %s", error)
+    return None
+
+
 def fetchValorantMmrHistoryByPuuid(
     apiKey: str, region: str, platform: str, puuid: str
 ) -> Optional[Dict]:
@@ -319,11 +352,18 @@ def parseValorantTier(tierName: Optional[str]) -> tuple[Optional[str], Optional[
     return tier or None, division
 
 
-def parseValorantDate(dateStr: Optional[str]) -> Optional[str]:
+def parseValorantDatetime(dateStr: Optional[str]) -> Optional[datetime]:
     if not dateStr:
         return None
     try:
         normalized = dateStr.replace("Z", "+00:00")
-        return datetime.fromisoformat(normalized).astimezone(timezone.utc).date().isoformat()
+        return datetime.fromisoformat(normalized).astimezone(timezone.utc)
     except ValueError:
         return None
+
+
+def parseValorantDate(dateStr: Optional[str]) -> Optional[str]:
+    if not dateStr:
+        return None
+    parsed = parseValorantDatetime(dateStr)
+    return parsed.date().isoformat() if parsed else None

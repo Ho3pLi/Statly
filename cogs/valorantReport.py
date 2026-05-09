@@ -1,6 +1,9 @@
 import asyncio
+import os
 import re
-from datetime import datetime
+from io import BytesIO
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import discord
@@ -13,7 +16,12 @@ from services.riot_api import (
     fetchValorantDailySnapshotByNameTag,
     resolveValorantRegion,
 )
-from services.valorantTracking import VALORANT_TIER_ORDER, generateDailyReport
+from services.valorantTracking import (
+    VALORANT_TIER_ORDER,
+    generateDailyReport,
+    generatePeriodReport,
+    getPeriodBounds,
+)
 from utils.database import DatabaseClient
 from utils.logger import getLogger
 
@@ -26,9 +34,36 @@ class ValorantReport(commands.Cog):
         self.botClient = botClient
         self.dbClient = DatabaseClient(appSettings.databasePath)
 
-    @app_commands.command(name="valorantreport", description="Send your daily Valorant ranked report.")
-    async def valorantReportCommand(self, interaction: discord.Interaction):
-        queueType = "COMPETITIVE"
+    @app_commands.command(
+        name="valorantreport",
+        description="Send your Valorant RR report for day, week, or a custom range.",
+    )
+    @app_commands.rename(period="period", start="start", end="end")
+    @app_commands.describe(
+        period="Report window",
+        start="Custom start in UTC: YYYY-MM-DD or YYYY-MM-DD HH:MM",
+        end="Custom end in UTC: YYYY-MM-DD or YYYY-MM-DD HH:MM",
+    )
+    @app_commands.choices(
+        period=[
+            app_commands.Choice(name="Day", value="day"),
+            app_commands.Choice(name="Week (Mon-Sun)", value="week"),
+            app_commands.Choice(name="Custom", value="custom"),
+        ]
+    )
+    async def valorantReportCommand(
+        self,
+        interaction: discord.Interaction,
+        period: str = "day",
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+    ):
+        if not appSettings.valorantApiKey:
+            await interaction.response.send_message(
+                "VALORANT_API_KEY is not configured. Please contact an admin.", ephemeral=True
+            )
+            return
+
         externalAccountId = self.getPrimaryValorantAccountId(interaction.user.id, interaction.guild_id)
         if not externalAccountId:
             await interaction.response.send_message(
@@ -36,12 +71,23 @@ class ValorantReport(commands.Cog):
             )
             return
 
-        todayStr = datetime.utcnow().strftime("%Y-%m-%d")
-        reportData = await generateDailyReport(self.dbClient, externalAccountId, queueType, todayStr)
+        try:
+            startAt, endAt, title = self.resolveReportRange(period, start, end)
+        except ValueError as error:
+            await interaction.response.send_message(str(error), ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        reportData = await generatePeriodReport(self.dbClient, externalAccountId, startAt, endAt, title)
 
         accountInfo = self.getExternalAccountInfo(externalAccountId)
-        embed = self.buildReportEmbed(interaction.user, queueType, reportData, accountInfo)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        embed = self.buildReportEmbed(interaction.user, reportData, accountInfo)
+        chartFile = self.buildChartFile(reportData)
+        if chartFile:
+            embed.set_image(url=f"attachment://{chartFile.filename}")
+            await interaction.followup.send(embed=embed, file=chartFile, ephemeral=True)
+            return
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="registergroup", description="Register a Valorant group of Riot IDs.")
     @app_commands.rename(groupName="groupname", members="members", region="region")
@@ -200,9 +246,7 @@ class ValorantReport(commands.Cog):
         guildId = self.dbClient.getOrCreateGuild(str(interaction.guild_id), getattr(interaction.guild, "name", None))
         groupRow = self.dbClient.getValorantGroup(guildId, groupName)
         if not groupRow:
-            await interaction.response.send_message(
-                f"Group **{groupName}** not found."
-            )
+            await interaction.response.send_message(f"Group **{groupName}** not found.")
             return
         self.dbClient.deleteValorantGroup(int(groupRow["id"]))
         await interaction.response.send_message(f"Group **{groupRow['name']}** deleted.")
@@ -300,9 +344,7 @@ class ValorantReport(commands.Cog):
         guildId = self.dbClient.getOrCreateGuild(str(interaction.guild_id), getattr(interaction.guild, "name", None))
         groupRow = self.dbClient.getValorantGroup(guildId, groupName)
         if not groupRow:
-            await interaction.response.send_message(
-                f"Group **{groupName}** not found."
-            )
+            await interaction.response.send_message(f"Group **{groupName}** not found.")
             return
 
         existing_members = self.dbClient.getValorantGroupMembers(int(groupRow["id"]))
@@ -323,11 +365,12 @@ class ValorantReport(commands.Cog):
         )
 
     def buildReportEmbed(
-        self, user: discord.abc.User, queueType: str, reportData: Dict, accountInfo: Optional[Dict]
+        self, user: discord.abc.User, reportData: Dict, accountInfo: Optional[Dict]
     ) -> discord.Embed:
         baseline = reportData.get("baseline") or {}
         current = reportData.get("current") or {}
         diff = reportData.get("diff") or {}
+        summary = reportData.get("summary") or {}
 
         accountLabel = "Unknown account"
         if accountInfo:
@@ -335,41 +378,120 @@ class ValorantReport(commands.Cog):
             region = f" ({accountInfo.get('region')})" if accountInfo.get("region") else ""
             accountLabel = f"{accountInfo.get('displayName', 'Unknown')}{tag}{region}"
 
+        periodLabel = self.formatPeriodLabel(summary.get("startAt"), summary.get("endAt"))
         embed = discord.Embed(
-            title="Daily Valorant Ranked Report",
-            description=f"Queue: **{queueType}**\nAccount: **{accountLabel}**",
+            title=reportData.get("title") or "Valorant RR Report",
+            description=f"Account: **{accountLabel}**\nWindow: **{periodLabel}**",
             color=discord.Color.red(),
             timestamp=datetime.utcnow(),
         )
         embed.set_author(name=str(user))
 
-        baselineText = (
-            f"{baseline.get('tier', 'N/A')} {baseline.get('division', '')} "
-            f"({baseline.get('lp', 0)} RR) | W {baseline.get('wins', 0)} / L {baseline.get('losses', 0)}"
-        )
-        currentText = (
-            f"{current.get('tier', 'N/A')} {current.get('division', '')} "
-            f"({current.get('lp', 0)} RR) | W {current.get('wins', 0)} / L {current.get('losses', 0)}"
-        )
-        diffTextParts: List[str] = []
-        lpDiff = diff.get("lpDiff", 0)
-        diffTextParts.append(f"RR diff: {lpDiff:+}")
+        matchCount = summary.get("matches", 0)
+        if matchCount == 0:
+            embed.add_field(
+                name="Summary",
+                value="No stored matches found in this range.",
+                inline=False,
+            )
+            return embed
+
+        baselineText = self.formatSnapshot(baseline, defaultLabel="Start")
+        currentText = self.formatSnapshot(current, defaultLabel="End")
+
+        diffTextParts: List[str] = [
+            f"Matches: {matchCount}",
+            f"RR diff: {diff.get('lpDiff', 0):+}",
+        ]
         tierChange = diff.get("tierChange")
         if tierChange:
             diffTextParts.append(f"Rank change: {tierChange}")
+        elif diff.get("rankUp"):
+            diffTextParts.append("Rank movement: up")
+        elif diff.get("rankDown"):
+            diffTextParts.append("Rank movement: down")
         else:
-            if diff.get("rankUp"):
-                diffTextParts.append("Rank movement: up")
-            elif diff.get("rankDown"):
-                diffTextParts.append("Rank movement: down")
-            else:
-                diffTextParts.append("Rank movement: none")
+            diffTextParts.append("Rank movement: none")
+
+        topMaps = summary.get("maps") or []
+        if topMaps:
+            mapLabel = ", ".join(f"{entry['name']} {entry['lpDiff']:+}" for entry in topMaps)
+            diffTextParts.append(f"Top maps: {mapLabel}")
 
         embed.add_field(name="Baseline", value=baselineText, inline=False)
         embed.add_field(name="Current", value=currentText, inline=False)
         embed.add_field(name="Diff", value="\n".join(diffTextParts), inline=False)
 
         return embed
+
+    def formatSnapshot(self, snapshot: Dict, defaultLabel: str) -> str:
+        if not snapshot:
+            return f"{defaultLabel}: N/A"
+        rankLabel = self.formatRank(snapshot.get("tier"), snapshot.get("division"))
+        rrLabel = f"{snapshot.get('lp')} RR" if snapshot.get("lp") is not None else "RR N/A"
+        timeLabel = self.formatTimestamp(snapshot.get("capturedAt"))
+        return f"{rankLabel} ({rrLabel})\n{timeLabel}"
+
+    def formatRank(self, tier: Optional[str], division: Optional[str]) -> str:
+        if not tier:
+            return "UNRANKED"
+        return f"{tier} {division}" if division else tier
+
+    def formatTimestamp(self, raw: Optional[str]) -> str:
+        if not raw:
+            return "Time: N/A"
+        try:
+            parsed = datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+            return parsed.strftime("UTC %Y-%m-%d %H:%M")
+        except ValueError:
+            return raw
+
+    def formatPeriodLabel(self, startRaw: Optional[str], endRaw: Optional[str]) -> str:
+        if not startRaw or not endRaw:
+            return "N/A"
+        try:
+            startAt = datetime.fromisoformat(startRaw.replace("Z", "+00:00")).astimezone(timezone.utc)
+            endAt = datetime.fromisoformat(endRaw.replace("Z", "+00:00")).astimezone(timezone.utc)
+            displayEnd = endAt - timedelta(seconds=1)
+            return f"{startAt.strftime('%Y-%m-%d %H:%M')} -> {displayEnd.strftime('%Y-%m-%d %H:%M')} UTC"
+        except ValueError:
+            return f"{startRaw} -> {endRaw}"
+
+    def resolveReportRange(
+        self,
+        period: str,
+        start: Optional[str],
+        end: Optional[str],
+    ) -> tuple[datetime, datetime, str]:
+        if period == "custom":
+            if not start or not end:
+                raise ValueError("Custom report requires both `start` and `end` in UTC.")
+            startAt = self.parseUtcInput(start, endOfDay=False)
+            endAt = self.parseUtcInput(end, endOfDay=True)
+            if not startAt or not endAt:
+                raise ValueError("Use UTC dates in `YYYY-MM-DD` or `YYYY-MM-DD HH:MM` format.")
+            if endAt <= startAt:
+                raise ValueError("Custom end must be after start.")
+            return startAt, endAt, "Custom Valorant RR Report"
+
+        return getPeriodBounds(period)
+
+    def parseUtcInput(self, raw: str, endOfDay: bool) -> Optional[datetime]:
+        value = raw.strip()
+        formats = [
+            ("%Y-%m-%d %H:%M", False),
+            ("%Y-%m-%dT%H:%M", False),
+            ("%Y-%m-%d", True),
+        ]
+        for fmt, isDateOnly in formats:
+            try:
+                parsed = datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
+                if isDateOnly and endOfDay:
+                    return parsed + timedelta(days=1)
+                return parsed
+            except ValueError:
+                continue
+        return None
 
     def getPrimaryValorantAccountId(self, discordUserId: int, guildId: Optional[int]) -> Optional[int]:
         return self.getPrimaryAccountId(discordUserId, guildId, "VAL")
@@ -468,17 +590,11 @@ class ValorantReport(commands.Cog):
                 tier = entry.get("tier") or "UNRANKED"
                 division = entry.get("division")
                 rr = entry.get("lp")
-                if division:
-                    rankLabel = f"{tier} {division}"
-                else:
-                    rankLabel = tier
+                rankLabel = f"{tier} {division}" if division else tier
                 rrLabel = f"{rr} RR" if rr is not None else "RR N/A"
                 lpDiff = entry.get("lpDiff")
-                if isinstance(lpDiff, int):
-                    diffLabel = f" | Today {lpDiff:+} RR"
-                else:
-                    diffLabel = ""
-                lines.append(f"{idx}. {name} — {rankLabel} ({rrLabel}){diffLabel}")
+                diffLabel = f" | Today {lpDiff:+} RR" if isinstance(lpDiff, int) else ""
+                lines.append(f"{idx}. {name} - {rankLabel} ({rrLabel}){diffLabel}")
             embed.add_field(name="Rankings", value="\n".join(lines), inline=False)
 
         if failures:
@@ -516,7 +632,6 @@ class ValorantReport(commands.Cog):
             if pref.get("schedule") != nowUtc:
                 continue
             externalAccountId = pref.get("externalAccountId")
-            queueType = pref.get("queueType", "COMPETITIVE")
             userId = pref.get("discordUserId")
             channelId = pref.get("channelId")
             if not externalAccountId or not userId:
@@ -529,16 +644,24 @@ class ValorantReport(commands.Cog):
                     valorantReportLogger.exception("Failed to fetch user %s for daily Valorant report", userId)
                     continue
             reportData = await generateDailyReport(
-                self.dbClient, externalAccountId, queueType, datetime.utcnow().strftime("%Y-%m-%d")
+                self.dbClient,
+                externalAccountId,
+                pref.get("queueType", "COMPETITIVE"),
+                datetime.utcnow().strftime("%Y-%m-%d"),
             )
             accountInfo = self.getExternalAccountInfo(externalAccountId)
-            embed = self.buildReportEmbed(user, queueType, reportData, accountInfo)
+            embed = self.buildReportEmbed(user, reportData, accountInfo)
+            chartFile = self.buildChartFile(reportData)
             channel = await self.resolveReportChannel(channelId)
             if not channel:
                 valorantReportLogger.warning("Missing report channel for daily Valorant report (user %s).", userId)
                 continue
             try:
-                await channel.send(embed=embed)
+                if chartFile:
+                    embed.set_image(url=f"attachment://{chartFile.filename}")
+                    await channel.send(embed=embed, file=chartFile)
+                else:
+                    await channel.send(embed=embed)
             except Exception:
                 valorantReportLogger.exception("Failed to send daily Valorant report to channel %s", channelId)
 
@@ -562,6 +685,94 @@ class ValorantReport(commands.Cog):
         except Exception:
             valorantReportLogger.exception("Failed to fetch channel %s for daily Valorant report", channelId)
             return None
+
+    def buildChartFile(self, reportData: Dict) -> Optional[discord.File]:
+        entries = reportData.get("entries") or []
+        if not entries:
+            return None
+
+        self.ensurePlotlyBrowser()
+
+        try:
+            import plotly.graph_objects as go
+        except ImportError:
+            valorantReportLogger.warning("Plotly is not installed; skipping Valorant chart rendering.")
+            return None
+
+        xValues: List[datetime] = []
+        yValues: List[int] = []
+        hoverText: List[str] = []
+
+        baseline = reportData.get("baseline") or {}
+        baselineTimeRaw = baseline.get("capturedAt")
+        baselineLp = baseline.get("lp")
+        if baselineTimeRaw and baselineLp is not None:
+            try:
+                baselineTime = datetime.fromisoformat(baselineTimeRaw.replace("Z", "+00:00")).astimezone(timezone.utc)
+                xValues.append(baselineTime)
+                yValues.append(int(baselineLp))
+                hoverText.append(f"Start: {self.formatRank(baseline.get('tier'), baseline.get('division'))} ({baselineLp} RR)")
+            except (ValueError, TypeError):
+                pass
+
+        for entry in entries:
+            capturedAtRaw = entry.get("capturedAtIso") or entry.get("capturedAt")
+            lp = entry.get("lp")
+            if not capturedAtRaw or lp is None:
+                continue
+            try:
+                capturedAt = datetime.fromisoformat(capturedAtRaw.replace("Z", "+00:00")).astimezone(timezone.utc)
+                xValues.append(capturedAt)
+                yValues.append(int(lp))
+                lpChange = entry.get("lpChange") or 0
+                hoverText.append(
+                    f"{self.formatRank(entry.get('tier'), entry.get('division'))} ({int(lp)} RR)<br>"
+                    f"Delta: {lpChange:+} RR<br>"
+                    f"Map: {entry.get('map') or 'Unknown'}"
+                )
+            except (ValueError, TypeError):
+                continue
+
+        if len(xValues) < 2:
+            return None
+
+        figure = go.Figure()
+        figure.add_trace(
+            go.Scatter(
+                x=xValues,
+                y=yValues,
+                mode="lines+markers",
+                line={"color": "#ff4655", "width": 3},
+                marker={"size": 7, "color": "#111827"},
+                hovertemplate="%{text}<br>%{x|%Y-%m-%d %H:%M UTC}<extra></extra>",
+                text=hoverText,
+            )
+        )
+        figure.update_layout(
+            title=reportData.get("title") or "Valorant RR Trend",
+            template="plotly_white",
+            paper_bgcolor="#ffffff",
+            plot_bgcolor="#f8fafc",
+            margin={"l": 48, "r": 24, "t": 56, "b": 48},
+            xaxis={"title": "Time (UTC)", "gridcolor": "#e5e7eb"},
+            yaxis={"title": "RR", "gridcolor": "#e5e7eb", "zerolinecolor": "#d1d5db"},
+            font={"family": "Arial", "color": "#111827"},
+        )
+
+        try:
+            imageBytes = figure.to_image(format="png", width=1100, height=550, scale=2)
+        except Exception:
+            valorantReportLogger.exception("Failed to render Valorant chart image.")
+            return None
+
+        return discord.File(BytesIO(imageBytes), filename="valorant_rr_chart.png")
+
+    def ensurePlotlyBrowser(self) -> None:
+        if os.getenv("BROWSER_PATH"):
+            return
+        chromePath = Path(".plotly-chrome/chrome-linux64/chrome").resolve()
+        if chromePath.exists():
+            os.environ["BROWSER_PATH"] = str(chromePath)
 
 
 async def setup(botClient: commands.Bot):
