@@ -12,6 +12,7 @@ from utils.riotApi import RiotAPI
 
 
 riotApiLogger = getLogger(__name__)
+VALORANT_API_REGIONS = ("eu", "na", "latam", "br", "ap", "kr")
 
 
 async def fetchCurrentLolRank(externalAccountId: int, queueType: str) -> Optional[Dict]:
@@ -174,6 +175,15 @@ def resolveValorantRegion(region: str) -> str:
     return "eu"
 
 
+def getValorantRegionCandidates(region: Optional[str]) -> list[str]:
+    resolved = resolveValorantRegion(region or "")
+    ordered = [resolved]
+    for candidate in VALORANT_API_REGIONS:
+        if candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
+
+
 def fetchValorantMmrHistoryByNameTag(
     apiKey: str, region: str, platform: str, gameName: str, tagLine: str
 ) -> Optional[Dict]:
@@ -209,7 +219,12 @@ async def fetchValorantStoredMmrHistoryByPuuid(region: str, puuid: str) -> Optio
     if not apiKey:
         riotApiLogger.error("VALORANT_API_KEY is not configured.")
         return None
-    return await asyncio.to_thread(fetchStoredValorantMmrHistoryByPuuid, apiKey, region, puuid)
+    for candidate in getValorantRegionCandidates(region):
+        payload = await asyncio.to_thread(fetchStoredValorantMmrHistoryByPuuid, apiKey, candidate, puuid)
+        if payload:
+            payload["_resolved_region"] = candidate
+            return payload
+    return None
 
 
 def fetchStoredValorantMmrHistoryByPuuid(apiKey: str, region: str, puuid: str) -> Optional[Dict]:
@@ -317,8 +332,13 @@ def buildValorantDailySnapshotFromHistory(data: Optional[Dict], todayDateStr: st
 def fetchValorantCurrentRankByNameTag(
     apiKey: str, region: str, platform: str, gameName: str, tagLine: str
 ) -> Optional[Dict]:
-    data = fetchValorantMmrHistoryByNameTag(apiKey, region, platform, gameName, tagLine)
-    return extractValorantCurrentRank(data)
+    for candidate in getValorantRegionCandidates(region):
+        data = fetchValorantMmrHistoryByNameTag(apiKey, candidate, platform, gameName, tagLine)
+        rankData = extractValorantCurrentRank(data)
+        if rankData:
+            rankData["_resolved_region"] = candidate
+            return rankData
+    return None
 
 
 def extractValorantCurrentRank(data: Optional[Dict]) -> Optional[Dict]:

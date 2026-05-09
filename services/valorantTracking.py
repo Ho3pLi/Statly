@@ -63,6 +63,15 @@ async def fetchStoredHistory(dbClient: DatabaseClient, externalAccountId: int) -
     if not payload:
         return None
 
+    resolvedRegion = payload.get("_resolved_region")
+    if resolvedRegion and resolvedRegion != accountRow["region"]:
+        dbClient.connection.execute(
+            "UPDATE externalAccount SET region = ? WHERE id = ?",
+            (resolvedRegion, externalAccountId),
+        )
+        dbClient.connection.commit()
+        accountRow["region"] = resolvedRegion
+
     payloadName = payload.get("name")
     payloadTag = payload.get("tag")
     if payloadName or payloadTag:

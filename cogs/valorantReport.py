@@ -319,6 +319,13 @@ class ValorantReport(commands.Cog):
         if not rankData:
             await interaction.followup.send("Could not fetch your Valorant rank right now. Please try again later.", ephemeral=True)
             return
+        resolvedRegion = rankData.get("_resolved_region")
+        if resolvedRegion and resolvedRegion != accountInfo.get("region"):
+            self.dbClient.connection.execute(
+                "UPDATE externalAccount SET region = ? WHERE id = ?",
+                (resolvedRegion, externalAccountId),
+            )
+            self.dbClient.connection.commit()
 
         tierRaw = rankData.get("tier")
         tierKey = str(tierRaw).strip().lower() if tierRaw else "unranked"
