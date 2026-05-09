@@ -1,4 +1,8 @@
 import asyncio
+import os
+import shutil
+import tempfile
+from datetime import datetime, timezone
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -154,6 +158,62 @@ class Tracker(commands.Cog):
         await interaction.followup.send(
             f"Linked Rocket League account for Epic ID {epicId}.", ephemeral=True
         )
+
+    @app_commands.command(name="dbdump", description="Export the SQLite database file (admin only).")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def dbDumpCommand(self, interaction: discord.Interaction):
+        if not interaction.guild_id:
+            await interaction.response.send_message("This command must be used in a server.", ephemeral=True)
+            return
+
+        dbPath = appSettings.databasePath
+        if not os.path.exists(dbPath):
+            await interaction.response.send_message(f"Database file not found: `{dbPath}`", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        tempDir = tempfile.gettempdir()
+        dumpName = f"statly_db_dump_{timestamp}.db"
+        dumpPath = os.path.join(tempDir, dumpName)
+
+        try:
+            shutil.copy2(dbPath, dumpPath)
+            await interaction.followup.send(
+                content=f"Database dump generated: `{dumpName}`",
+                file=discord.File(dumpPath, filename=dumpName),
+                ephemeral=True,
+            )
+        except Exception:
+            trackerLogger.exception("Failed to generate DB dump.")
+            await interaction.followup.send(
+                "Failed to generate DB dump. Check bot logs for details.",
+                ephemeral=True,
+            )
+        finally:
+            try:
+                if os.path.exists(dumpPath):
+                    os.remove(dumpPath)
+            except OSError:
+                trackerLogger.warning("Could not remove temporary dump file: %s", dumpPath)
+
+    @dbDumpCommand.error
+    async def dbDumpCommandError(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        if isinstance(error, app_commands.MissingPermissions):
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "You need administrator permission to use this command.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.response.send_message(
+                    "You need administrator permission to use this command.",
+                    ephemeral=True,
+                )
+            return
+        raise error
 
 
 async def setup(botClient: commands.Bot):
