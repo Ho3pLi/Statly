@@ -55,22 +55,26 @@ async def fetchStoredHistory(dbClient: DatabaseClient, externalAccountId: int) -
     ).fetchone()
     if not accountRow:
         return None
+    externalId = accountRow["externalId"]
+    currentRegion = accountRow["region"]
+    currentDisplayName = accountRow["displayName"]
+    currentTagLine = accountRow["tagLine"]
 
     payload = await fetchValorantStoredMmrHistoryByPuuid(
-        resolveValorantRegion(accountRow["region"]),
-        accountRow["externalId"],
+        resolveValorantRegion(currentRegion),
+        externalId,
     )
     if not payload:
         return None
 
     resolvedRegion = payload.get("_resolved_region")
-    if resolvedRegion and resolvedRegion != accountRow["region"]:
+    if resolvedRegion and resolvedRegion != currentRegion:
         dbClient.connection.execute(
             "UPDATE externalAccount SET region = ? WHERE id = ?",
             (resolvedRegion, externalAccountId),
         )
         dbClient.connection.commit()
-        accountRow["region"] = resolvedRegion
+        currentRegion = resolvedRegion
 
     payloadName = payload.get("name")
     payloadTag = payload.get("tag")
@@ -86,15 +90,15 @@ async def fetchStoredHistory(dbClient: DatabaseClient, externalAccountId: int) -
         )
         dbClient.connection.commit()
         if payloadName:
-            accountRow["displayName"] = payloadName
+            currentDisplayName = payloadName
         if payloadTag:
-            accountRow["tagLine"] = payloadTag
+            currentTagLine = payloadTag
 
     return {
         "payload": payload,
-        "displayName": accountRow["displayName"],
-        "tagLine": accountRow["tagLine"],
-        "region": resolveValorantRegion(accountRow["region"]),
+        "displayName": currentDisplayName,
+        "tagLine": currentTagLine,
+        "region": resolveValorantRegion(currentRegion),
     }
 
 
